@@ -77,13 +77,26 @@ namespace TradingConsole.Wpf.ViewModels
                 {
                     _selectedIndex = value;
                     OnPropertyChanged(nameof(SelectedIndex));
-                    UpdateUnderlyingData();
+                    // --- FIX: This now triggers the entire reliable refresh sequence ---
                     Task.Run(() => LoadExpiryAndOptionChainAsync());
                 }
             }
         }
         private string? _selectedExpiry;
-        public string? SelectedExpiry { get => _selectedExpiry; set { if (_selectedExpiry != value) { _selectedExpiry = value; OnPropertyChanged(nameof(SelectedExpiry)); Task.Run(() => LoadOptionChainOnlyAsync()); } } }
+        public string? SelectedExpiry
+        {
+            get => _selectedExpiry;
+            set
+            {
+                if (_selectedExpiry != value)
+                {
+                    _selectedExpiry = value;
+                    OnPropertyChanged(nameof(SelectedExpiry));
+                    // This is for manual changes by the user
+                    Task.Run(() => LoadOptionChainOnlyAsync());
+                }
+            }
+        }
         public string StatusMessage { get; private set; } = string.Empty;
 
         private decimal _underlyingPrice;
@@ -310,7 +323,7 @@ namespace TradingConsole.Wpf.ViewModels
 
             foreach (var pair in symbolsToLoad)
             {
-                var securityId = _scripMasterService.FindIndexSecurityId(pair.Key);
+                var securityId = _scripMasterService.FindIndexSecurityId(pair.Value);
                 if (!string.IsNullOrEmpty(securityId))
                 {
                     App.Current.Dispatcher.Invoke(() =>
@@ -320,13 +333,13 @@ namespace TradingConsole.Wpf.ViewModels
                             Name = pair.Key,
                             Symbol = pair.Value,
                             ScripId = securityId,
-                            Segment = "IDX_I"
+                            Segment = "I"
                         });
                     });
                 }
                 else
                 {
-                    Debug.WriteLine($"WARNING: Could not find SecurityId for index: {pair.Key}");
+                    Debug.WriteLine($"WARNING: Could not find SecurityId for index: {pair.Key} (Symbol: {pair.Value})");
                 }
             }
         }
@@ -361,12 +374,16 @@ namespace TradingConsole.Wpf.ViewModels
 
             instrumentsToMonitor.AddRange(new List<DashboardInstrument>
             {
-                new() { Symbol = "NIFTY-FUT",     IsFuture = true, UnderlyingSymbol = "NIFTY",     FeedType = "Quote", SegmentId = 2 },
+                new() { Symbol = "NIFTY-FUT", IsFuture = true, UnderlyingSymbol = "NIFTY", FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "BANKNIFTY-FUT", IsFuture = true, UnderlyingSymbol = "BANKNIFTY", FeedType = "Quote", SegmentId = 2 },
-                new() { Symbol = "HDFCBANK",  FeedType = "Quote", SegmentId = 1 },
+                new() { Symbol = "HDFCBANK", FeedType = "Quote", SegmentId = 1 },
+                new() { Symbol = "HDFCBANK-FUT", IsFuture = true, UnderlyingSymbol = "HDFCBANK", FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "ICICIBANK", FeedType = "Quote", SegmentId = 1 },
-                new() { Symbol = "RELIANCE",  FeedType = "Quote", SegmentId = 1 },
-                new() { Symbol = "INFY",      FeedType = "Quote", SegmentId = 1 },
+                new() { Symbol = "ICICIBANK-FUT", IsFuture = true, UnderlyingSymbol = "ICICIBANK", FeedType = "Quote", SegmentId = 2 },
+                new() { Symbol = "RELIANCE", FeedType = "Quote", SegmentId = 1 },
+                new() { Symbol = "RELIANCE-FUT", IsFuture = true, UnderlyingSymbol = "RELIANCE", FeedType = "Quote", SegmentId = 2 },
+                new() { Symbol = "INFY", FeedType = "Quote", SegmentId = 1 },
+                new() { Symbol = "INFY-FUT", IsFuture = true, UnderlyingSymbol = "INFY", FeedType = "Quote", SegmentId = 2 }
             });
 
             foreach (var inst in instrumentsToMonitor)
@@ -379,7 +396,7 @@ namespace TradingConsole.Wpf.ViewModels
             foreach (var indexInfo in Indices)
             {
                 await AddIndexOptionsToDashboardAsync(indexInfo);
-                await Task.Delay(3500);
+                await Task.Delay(1500);
             }
         }
 
@@ -390,13 +407,16 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 if (string.IsNullOrEmpty(inst.SecurityId))
                 {
+                    Debug.WriteLine($"[RESOLVER] Attempting to resolve: {inst.Symbol}");
                     if (inst.IsFuture)
                     {
                         inst.SecurityId = _scripMasterService.FindNearMonthFutureSecurityId(inst.UnderlyingSymbol) ?? string.Empty;
+                        Debug.WriteLine($"[RESOLVER] Future Found For '{inst.UnderlyingSymbol}': ID = {inst.SecurityId}");
                     }
                     else
                     {
                         inst.SecurityId = _scripMasterService.FindEquitySecurityId(inst.Symbol) ?? string.Empty;
+                        Debug.WriteLine($"[RESOLVER] Equity Found For '{inst.Symbol}': ID = {inst.SecurityId}");
                     }
                 }
             }
@@ -409,23 +429,21 @@ namespace TradingConsole.Wpf.ViewModels
                 await UpdateStatusAsync($"Fetching options for {indexInfo.Name}...");
 
                 var expiryListResponse = await _apiClient.GetExpiryListAsync(indexInfo.ScripId, indexInfo.Segment);
-                if (expiryListResponse == null || expiryListResponse.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
+                if (expiryListResponse?.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
                 {
-                    await UpdateStatusAsync($"Could not get expiry dates for {indexInfo.Name}. API might be offline.");
-                    Debug.WriteLine($"No expiry dates found for {indexInfo.Name}");
+                    await UpdateStatusAsync($"Could not get expiry dates for {indexInfo.Name}.");
                     return;
                 }
 
                 var nearestExpiry = expiryListResponse.ExpiryDates.FirstOrDefault();
                 if (string.IsNullOrEmpty(nearestExpiry)) return;
 
-                await Task.Delay(3100);
+                await Task.Delay(1100);
 
                 var optionChainResponse = await _apiClient.GetOptionChainAsync(indexInfo.ScripId, indexInfo.Segment, nearestExpiry);
                 if (optionChainResponse?.Data?.OptionChain == null)
                 {
                     await UpdateStatusAsync($"Failed to load option chain for {indexInfo.Name}.");
-                    Debug.WriteLine($"Could not fetch valid option chain for {indexInfo.Name}");
                     return;
                 }
 
@@ -441,30 +459,44 @@ namespace TradingConsole.Wpf.ViewModels
                 var atmStrikeData = allStrikes.OrderBy(s => Math.Abs(s!.Price - underlyingPrice)).First();
                 var atmIndex = allStrikes.IndexOf(atmStrikeData!);
 
-                int startIndex = Math.Max(0, atmIndex - 8);
-                int endIndex = Math.Min(allStrikes.Count - 1, atmIndex + 8);
+                int startIndex = Math.Max(0, atmIndex - 4);
+                int endIndex = Math.Min(allStrikes.Count - 1, atmIndex + 4);
 
                 for (int i = startIndex; i <= endIndex; i++)
                 {
                     var strikeInfo = allStrikes[i]!;
-                    await App.Current.Dispatcher.InvokeAsync(() => {
-                        Dashboard.MonitoredInstruments.Add(new DashboardInstrument
-                        {
-                            Symbol = $"{indexInfo.Symbol} {strikeInfo.Price} CE",
-                            SecurityId = strikeInfo.Data.CallOption?.SecurityId ?? string.Empty,
-                            FeedType = "Quote",
-                            SegmentId = 2,
-                            UnderlyingSymbol = indexInfo.Symbol
+                    if (strikeInfo.Data == null) continue;
+
+                    // --- FIX: Format the strike price correctly to remove trailing zeros ---
+                    string formattedStrike = strikeInfo.Price.ToString("G29");
+
+                    if (strikeInfo.Data.CallOption != null)
+                    {
+                        await App.Current.Dispatcher.InvokeAsync(() => {
+                            Dashboard.MonitoredInstruments.Add(new DashboardInstrument
+                            {
+                                Symbol = $"{indexInfo.Symbol} {formattedStrike} CE",
+                                SecurityId = strikeInfo.Data.CallOption.SecurityId,
+                                FeedType = "Quote",
+                                SegmentId = 2,
+                                UnderlyingSymbol = indexInfo.Symbol
+                            });
                         });
-                        Dashboard.MonitoredInstruments.Add(new DashboardInstrument
-                        {
-                            Symbol = $"{indexInfo.Symbol} {strikeInfo.Price} PE",
-                            SecurityId = strikeInfo.Data.PutOption?.SecurityId ?? string.Empty,
-                            FeedType = "Quote",
-                            SegmentId = 2,
-                            UnderlyingSymbol = indexInfo.Symbol
+                    }
+
+                    if (strikeInfo.Data.PutOption != null)
+                    {
+                        await App.Current.Dispatcher.InvokeAsync(() => {
+                            Dashboard.MonitoredInstruments.Add(new DashboardInstrument
+                            {
+                                Symbol = $"{indexInfo.Symbol} {formattedStrike} PE",
+                                SecurityId = strikeInfo.Data.PutOption.SecurityId,
+                                FeedType = "Quote",
+                                SegmentId = 2,
+                                UnderlyingSymbol = indexInfo.Symbol
+                            });
                         });
-                    });
+                    }
                 }
             }
             catch (Exception ex)
@@ -481,7 +513,7 @@ namespace TradingConsole.Wpf.ViewModels
                 .ToList();
 
             var quoteInstruments = allInstruments
-                .Where(i => i.FeedType == "Quote" || i.FeedType == "Ticker")
+                .Where(i => i.FeedType == "Quote")
                 .ToDictionary(i => i.SecurityId, i => i.SegmentId);
 
             var tickerInstruments = allInstruments
@@ -622,30 +654,44 @@ namespace TradingConsole.Wpf.ViewModels
 
         private async Task LoadExpiryAndOptionChainAsync()
         {
-            if (_isDataLoading) return;
+            if (_isDataLoading || SelectedIndex == null) return;
 
             try
             {
                 _isDataLoading = true;
-                if (SelectedIndex == null) return;
 
                 await UpdateStatusAsync($"Fetching expiry dates for {SelectedIndex.Name}...");
                 var expiryListResponse = await _apiClient.GetExpiryListAsync(SelectedIndex.ScripId, SelectedIndex.Segment);
 
-                if (expiryListResponse == null || expiryListResponse.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
+                string? firstExpiry = null;
+                if (expiryListResponse?.ExpiryDates != null && expiryListResponse.ExpiryDates.Any())
+                {
+                    firstExpiry = expiryListResponse.ExpiryDates.FirstOrDefault();
+                    await App.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        ExpiryDates.Clear();
+                        expiryListResponse.ExpiryDates.ForEach(ExpiryDates.Add);
+                        // Set the property directly without invoking the setter's Task.Run
+                        _selectedExpiry = firstExpiry;
+                        OnPropertyChanged(nameof(SelectedExpiry));
+                    });
+                }
+                else
                 {
                     await UpdateStatusAsync($"Could not get expiry dates for {SelectedIndex.Name}.");
                     return;
                 }
 
-                await App.Current.Dispatcher.InvokeAsync(() =>
+                if (string.IsNullOrEmpty(firstExpiry))
                 {
-                    ExpiryDates.Clear();
-                    expiryListResponse.ExpiryDates.ForEach(ExpiryDates.Add);
-                    SelectedExpiry = ExpiryDates.FirstOrDefault();
-                });
-
-                if (string.IsNullOrEmpty(SelectedExpiry)) { await UpdateStatusAsync("No valid expiry dates found."); App.Current.Dispatcher.Invoke(OptionChainRows.Clear); }
+                    await UpdateStatusAsync("No valid expiry dates found.");
+                    App.Current.Dispatcher.Invoke(OptionChainRows.Clear);
+                }
+                else
+                {
+                    // --- FIX: Directly call the option chain load to ensure correct sequence ---
+                    await LoadOptionChainOnlyAsync();
+                }
             }
             catch (DhanApiException ex)
             {
@@ -673,6 +719,15 @@ namespace TradingConsole.Wpf.ViewModels
                 _optionChainRefreshTimer?.Change(Timeout.Infinite, Timeout.Infinite);
 
                 await UpdateStatusAsync($"Fetching option chain for {SelectedExpiry}...");
+
+                // --- RELIABILITY FIX: Get latest underlying price before fetching chain ---
+                var quoteResponse = await _apiClient.GetQuoteAsync(SelectedIndex.ScripId);
+                if (quoteResponse != null)
+                {
+                    UnderlyingPrice = quoteResponse.Ltp;
+                    UnderlyingPreviousClose = quoteResponse.PreviousClose;
+                }
+
 
                 var optionChainResponse = await _apiClient.GetOptionChainAsync(SelectedIndex.ScripId, SelectedIndex.Segment, SelectedExpiry);
                 if (optionChainResponse?.Data?.OptionChain != null)

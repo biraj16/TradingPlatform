@@ -110,36 +110,42 @@ namespace TradingConsole.DhanApi
             return values.ToArray();
         }
 
+        // --- NEW UNIFIED SEARCH STRATEGY ---
+        private IEnumerable<ScripInfo> FindInstruments(string segment, string instrumentType, string symbol, bool useSemInstrumentName = false)
+        {
+            var searchTerm = symbol.Trim();
+            return _scripMaster.Where(s =>
+                s.Segment == segment &&
+                s.InstrumentType == instrumentType &&
+                (useSemInstrumentName
+                    ? s.SemInstrumentName.Trim().Equals(searchTerm, StringComparison.OrdinalIgnoreCase)
+                    : s.TradingSymbol.Trim().Equals(searchTerm, StringComparison.OrdinalIgnoreCase))
+            );
+        }
+
         public string? FindNearMonthFutureSecurityId(string baseSymbol)
         {
-            var allFutures = _scripMaster.Where(s =>
-                s.InstrumentType == "FUTIDX" && // Only find index futures
-                s.TradingSymbol.StartsWith(baseSymbol, StringComparison.OrdinalIgnoreCase) &&
-                s.ExpiryDate >= DateTime.Today)
-                .OrderBy(s => s.ExpiryDate)
-                .ToList();
+            // Find both Index and Stock futures in the Futures segment ('F')
+            var indexFutures = FindInstruments("F", "FUTIDX", baseSymbol, useSemInstrumentName: false);
+            var stockFutures = FindInstruments("F", "FUTSTK", baseSymbol, useSemInstrumentName: false);
+
+            var allFutures = indexFutures.Concat(stockFutures)
+                .Where(s => s.ExpiryDate >= DateTime.Today)
+                .OrderBy(s => s.ExpiryDate);
 
             return allFutures.FirstOrDefault()?.SecurityId;
         }
 
         public string? FindEquitySecurityId(string tradingSymbol)
         {
-            return _scripMaster.FirstOrDefault(s => s.InstrumentType == "EQUITY" &&
-                s.TradingSymbol.Equals(tradingSymbol, StringComparison.OrdinalIgnoreCase))?.SecurityId;
+            // Find an Equity in the Equity segment ('E')
+            return FindInstruments("E", "EQUITY", tradingSymbol).FirstOrDefault()?.SecurityId;
         }
 
-        public string? FindIndexSecurityId(string displayName)
+        public string? FindIndexSecurityId(string tradingSymbol)
         {
-            var trimmedDisplayName = displayName.Trim();
-
-            // This logic is now robust. It filters for the correct InstrumentType ("INDEX") 
-            // and the correct Segment ("I" for Index) first, then finds the one with the matching display name.
-            var match = _scripMaster.FirstOrDefault(s =>
-                s.InstrumentType == "INDEX" &&
-                s.Segment == "I" &&
-                s.SemInstrumentName.Trim().Equals(trimmedDisplayName, StringComparison.OrdinalIgnoreCase));
-
-            return match?.SecurityId;
+            // Find an Index in the Index segment ('I'), searching by the SEM name
+            return FindInstruments("I", "INDEX", tradingSymbol, useSemInstrumentName: true).FirstOrDefault()?.SecurityId;
         }
 
         public string? FindSecurityId(string underlyingSymbol, string expiry, decimal strike, string optionType)
@@ -149,11 +155,18 @@ namespace TradingConsole.DhanApi
                 Debug.WriteLine($"Invalid expiry date format: {expiry}");
                 return null;
             }
-            var result = _scripMaster.FirstOrDefault(s =>
-                s.TradingSymbol.Equals(underlyingSymbol, StringComparison.OrdinalIgnoreCase) &&
-                s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date == targetDate.Date &&
-                s.StrikePrice == strike &&
-                s.OptionType.Equals(optionType, StringComparison.OrdinalIgnoreCase));
+
+            // Find both Index and Stock options in the Options segment ('O')
+            var indexOptions = FindInstruments("O", "OPTIDX", underlyingSymbol, useSemInstrumentName: false);
+            var stockOptions = FindInstruments("O", "OPTSTK", underlyingSymbol, useSemInstrumentName: false);
+
+            var result = indexOptions.Concat(stockOptions)
+                .FirstOrDefault(s =>
+                    s.ExpiryDate.HasValue &&
+                    s.ExpiryDate.Value.Date == targetDate.Date &&
+                    s.StrikePrice == strike &&
+                    s.OptionType.Equals(optionType, StringComparison.OrdinalIgnoreCase));
+
             if (result == null)
             {
                 Debug.WriteLine($"No option found for: {underlyingSymbol}, {expiry}, {strike}, {optionType}");

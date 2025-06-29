@@ -4,7 +4,6 @@ using System.Runtime.CompilerServices;
 
 namespace TradingConsole.Core.Models
 {
-    // --- FIX: Re-added the missing enum ---
     public enum OptionState
     {
         ITM,
@@ -14,7 +13,6 @@ namespace TradingConsole.Core.Models
 
     public class OptionChainRow : INotifyPropertyChanged
     {
-        // --- FIX: Initialized non-nullable properties ---
         public OptionDetails CallOption { get; set; } = new OptionDetails();
         public OptionDetails PutOption { get; set; } = new OptionDetails();
         public decimal StrikePrice { get; set; }
@@ -31,7 +29,7 @@ namespace TradingConsole.Core.Models
 
     public class OptionDetails : INotifyPropertyChanged
     {
-        private string _securityId = string.Empty; // Initialized
+        private string _securityId = string.Empty;
         private decimal _ltp;
         private decimal _previousClose;
         private decimal _iv;
