@@ -29,6 +29,10 @@ namespace TradingConsole.Wpf.ViewModels
         private Timer? _optionChainRefreshTimer;
         private readonly Dictionary<string, OptionDetails> _optionScripMap = new();
 
+        // --- SOLUTION FOR ROBUSTNESS: Prevents rapid-click API spam ---
+        private bool _isDataLoading = false;
+
+
         public DashboardViewModel Dashboard { get; }
         public AnalysisService AnalysisService => _analysisService;
 
@@ -319,16 +323,11 @@ namespace TradingConsole.Wpf.ViewModels
 
             var instrumentsToMonitor = new List<DashboardInstrument>
             {
-                // Indices
                 new() { Symbol = "NIFTY",     FeedType = "Ticker", SegmentId = 0 },
                 new() { Symbol = "BANKNIFTY", FeedType = "Ticker", SegmentId = 0 },
                 new() { Symbol = "SENSEX",    FeedType = "Quote",  SegmentId = 0 },
-
-                // Index Futures
                 new() { Symbol = "NIFTY-FUT",     IsFuture = true, UnderlyingSymbol = "NIFTY",     FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "BANKNIFTY-FUT", IsFuture = true, UnderlyingSymbol = "BANKNIFTY", FeedType = "Quote", SegmentId = 2 },
-                
-                // Stocks
                 new() { Symbol = "HDFCBANK",  FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "ICICIBANK", FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "RELIANCE",  FeedType = "Quote", SegmentId = 1 },
@@ -345,6 +344,7 @@ namespace TradingConsole.Wpf.ViewModels
             foreach (var indexInfo in Indices)
             {
                 await AddIndexOptionsToDashboardAsync(indexInfo);
+                await Task.Delay(3500);
             }
         }
 
@@ -367,34 +367,31 @@ namespace TradingConsole.Wpf.ViewModels
             }
         }
 
-        // --- UPDATED with robust error handling ---
         private async Task AddIndexOptionsToDashboardAsync(TickerIndex indexInfo)
         {
             try
             {
                 await UpdateStatusAsync($"Fetching options for {indexInfo.Name}...");
 
-                // Get expiry dates
                 var expiryListResponse = await _apiClient.GetExpiryListAsync(indexInfo.ScripId, indexInfo.Segment);
                 if (expiryListResponse == null || expiryListResponse.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
                 {
                     await UpdateStatusAsync($"Could not get expiry dates for {indexInfo.Name}. API might be offline.");
                     Debug.WriteLine($"No expiry dates found for {indexInfo.Name}");
-                    return; // Stop execution for this index if we can't get expiries
+                    return;
                 }
 
                 var nearestExpiry = expiryListResponse.ExpiryDates.FirstOrDefault();
                 if (string.IsNullOrEmpty(nearestExpiry)) return;
 
-                await Task.Delay(3100); // Respect API rate limits
+                await Task.Delay(3100);
 
-                // Get option chain
                 var optionChainResponse = await _apiClient.GetOptionChainAsync(indexInfo.ScripId, indexInfo.Segment, nearestExpiry);
                 if (optionChainResponse?.Data?.OptionChain == null)
                 {
                     await UpdateStatusAsync($"Failed to load option chain for {indexInfo.Name}.");
                     Debug.WriteLine($"Could not fetch valid option chain for {indexInfo.Name}");
-                    return; // Stop if option chain is invalid
+                    return;
                 }
 
                 var underlyingPrice = optionChainResponse.Data.UnderlyingLastPrice;
@@ -501,15 +498,35 @@ namespace TradingConsole.Wpf.ViewModels
                 {
                     UnderlyingPrice = packet.LastPrice;
                 }
+
+                // --- SOLUTION FOR DATA BUG: Update the Option Chain Row ---
                 if (_optionScripMap.TryGetValue(packet.SecurityId, out var optionDetails))
                 {
                     optionDetails.LTP = packet.LastPrice;
+                    optionDetails.Volume = packet.Volume;
+                    // Note: QuotePacket doesn't contain OI, so that's handled in OnOiUpdateReceived
                 }
+
+                // Update the dashboard (this was already working correctly)
                 Dashboard.UpdateQuote(packet);
             });
         }
 
-        private void OnOiUpdateReceived(OiPacket packet) => App.Current.Dispatcher.Invoke(() => Dashboard.UpdateOi(packet));
+        private void OnOiUpdateReceived(OiPacket packet)
+        {
+            App.Current.Dispatcher.Invoke(() =>
+            {
+                // --- SOLUTION FOR DATA BUG: Update the Option Chain Row ---
+                if (_optionScripMap.TryGetValue(packet.SecurityId, out var optionDetails))
+                {
+                    optionDetails.OI = packet.OpenInterest;
+                }
+
+                // Update the dashboard
+                Dashboard.UpdateOi(packet);
+            });
+        }
+
 
         private void UpdateUnderlyingData()
         {
@@ -575,9 +592,15 @@ namespace TradingConsole.Wpf.ViewModels
 
         private async Task LoadExpiryAndOptionChainAsync()
         {
-            if (SelectedIndex == null) return;
+            // --- SOLUTION FOR ROBUSTNESS: Check lock ---
+            if (_isDataLoading) return;
+
             try
             {
+                // --- SOLUTION FOR ROBUSTNESS: Set lock ---
+                _isDataLoading = true;
+                if (SelectedIndex == null) return;
+
                 await UpdateStatusAsync($"Fetching expiry dates for {SelectedIndex.Name}...");
                 var expiryListResponse = await _apiClient.GetExpiryListAsync(SelectedIndex.ScripId, SelectedIndex.Segment);
 
@@ -604,17 +627,28 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
             }
+            finally
+            {
+                // --- SOLUTION FOR ROBUSTNESS: Release lock ---
+                _isDataLoading = false;
+            }
         }
 
         private async Task LoadOptionChainOnlyAsync()
         {
-            if (SelectedIndex == null || string.IsNullOrWhiteSpace(SelectedExpiry)) return;
+            // --- SOLUTION FOR ROBUSTNESS: Check lock ---
+            if (_isDataLoading) return;
 
-            _optionChainRefreshTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-
-            await UpdateStatusAsync($"Fetching option chain for {SelectedExpiry}...");
             try
             {
+                // --- SOLUTION FOR ROBUSTNESS: Set lock ---
+                _isDataLoading = true;
+                if (SelectedIndex == null || string.IsNullOrWhiteSpace(SelectedExpiry)) return;
+
+                _optionChainRefreshTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+
+                await UpdateStatusAsync($"Fetching option chain for {SelectedExpiry}...");
+
                 var optionChainResponse = await _apiClient.GetOptionChainAsync(SelectedIndex.ScripId, SelectedIndex.Segment, SelectedExpiry);
                 if (optionChainResponse?.Data?.OptionChain != null)
                 {
@@ -682,6 +716,11 @@ namespace TradingConsole.Wpf.ViewModels
             catch (Exception ex)
             {
                 await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+            }
+            finally
+            {
+                // --- SOLUTION FOR ROBUSTNESS: Release lock ---
+                _isDataLoading = false;
             }
         }
 
@@ -776,12 +815,12 @@ namespace TradingConsole.Wpf.ViewModels
 
             PcrOi = (TotalCallOi > 0) ? (decimal)TotalPutOi / TotalCallOi : 0;
 
-            long maxCallOi = OptionChainRows.Max(r => (long)(r.CallOption?.OI ?? 0));
-            long maxPutOi = OptionChainRows.Max(r => (long)(r.PutOption?.OI ?? 0));
+            long maxCallOi = OptionChainRows.Any(r => r.CallOption != null) ? OptionChainRows.Max(r => (long)(r.CallOption?.OI ?? 0)) : 0;
+            long maxPutOi = OptionChainRows.Any(r => r.PutOption != null) ? OptionChainRows.Max(r => (long)(r.PutOption?.OI ?? 0)) : 0;
             MaxOi = Math.Max(maxCallOi, maxPutOi);
 
-            decimal maxCallOiChange = OptionChainRows.Max(r => Math.Abs(r.CallOption?.OiChange ?? 0));
-            decimal maxPutOiChange = OptionChainRows.Max(r => Math.Abs(r.PutOption?.OiChange ?? 0));
+            decimal maxCallOiChange = OptionChainRows.Any(r => r.CallOption != null) ? OptionChainRows.Max(r => Math.Abs(r.CallOption?.OiChange ?? 0)) : 0;
+            decimal maxPutOiChange = OptionChainRows.Any(r => r.PutOption != null) ? OptionChainRows.Max(r => Math.Abs(r.PutOption?.OiChange ?? 0)) : 0;
             MaxOiChange = Math.Max(maxCallOiChange, maxPutOiChange);
         }
 
