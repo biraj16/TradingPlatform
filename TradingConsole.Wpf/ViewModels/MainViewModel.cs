@@ -1,4 +1,6 @@
-﻿using System;
+﻿// TradingConsole.Wpf/ViewModels/MainViewModel.cs
+
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -29,7 +31,6 @@ namespace TradingConsole.Wpf.ViewModels
         private Timer? _optionChainRefreshTimer;
         private readonly Dictionary<string, OptionDetails> _optionScripMap = new();
 
-        // --- SOLUTION FOR ROBUSTNESS: Prevents rapid-click API spam ---
         private bool _isDataLoading = false;
 
 
@@ -76,7 +77,7 @@ namespace TradingConsole.Wpf.ViewModels
                 {
                     _selectedIndex = value;
                     OnPropertyChanged(nameof(SelectedIndex));
-                    UpdateUnderlyingData(); // Update UI for the new index
+                    UpdateUnderlyingData();
                     Task.Run(() => LoadExpiryAndOptionChainAsync());
                 }
             }
@@ -151,12 +152,7 @@ namespace TradingConsole.Wpf.ViewModels
             ExpiryDates = new ObservableCollection<string>();
             Orders = new ObservableCollection<OrderBookEntry>();
 
-            Indices = new ObservableCollection<TickerIndex>
-            {
-                new TickerIndex { Name = "NIFTY 50", ScripId = "13", Segment = "IDX_I", Symbol = "NIFTY" },
-                new TickerIndex { Name = "NIFTY BANK", ScripId = "25", Segment = "IDX_I", Symbol = "BANKNIFTY" },
-                new TickerIndex { Name = "SENSEX", ScripId = "51", Segment = "IDX_I", Symbol = "SENSEX" }
-            };
+            Indices = new ObservableCollection<TickerIndex>();
 
             BuyCallCommand = new RelayCommand(ExecuteBuyCall);
             SellCallCommand = new RelayCommand(ExecuteSellCall);
@@ -292,6 +288,9 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 await UpdateStatusAsync("Downloading Instrument Master...");
                 await _scripMasterService.LoadScripMasterAsync();
+
+                PopulateIndices();
+
                 await _webSocketClient.ConnectAsync();
             }
             catch (Exception ex)
@@ -299,6 +298,39 @@ namespace TradingConsole.Wpf.ViewModels
                 await UpdateStatusAsync($"Fatal error during startup: {ex.Message}");
             }
         }
+
+        private void PopulateIndices()
+        {
+            var symbolsToLoad = new Dictionary<string, string>
+            {
+                { "Nifty 50", "NIFTY" },
+                { "Nifty Bank", "BANKNIFTY" },
+                { "Sensex", "SENSEX" }
+            };
+
+            foreach (var pair in symbolsToLoad)
+            {
+                var securityId = _scripMasterService.FindIndexSecurityId(pair.Key);
+                if (!string.IsNullOrEmpty(securityId))
+                {
+                    App.Current.Dispatcher.Invoke(() =>
+                    {
+                        Indices.Add(new TickerIndex
+                        {
+                            Name = pair.Key,
+                            Symbol = pair.Value,
+                            ScripId = securityId,
+                            Segment = "IDX_I"
+                        });
+                    });
+                }
+                else
+                {
+                    Debug.WriteLine($"WARNING: Could not find SecurityId for index: {pair.Key}");
+                }
+            }
+        }
+
 
         private async void OnWebSocketConnected()
         {
@@ -321,18 +353,21 @@ namespace TradingConsole.Wpf.ViewModels
             await UpdateStatusAsync("Configuring Dashboard...");
             await App.Current.Dispatcher.InvokeAsync(() => Dashboard.MonitoredInstruments.Clear());
 
-            var instrumentsToMonitor = new List<DashboardInstrument>
+            var instrumentsToMonitor = new List<DashboardInstrument>();
+            foreach (var index in Indices)
             {
-                new() { Symbol = "NIFTY",     FeedType = "Ticker", SegmentId = 0 },
-                new() { Symbol = "BANKNIFTY", FeedType = "Ticker", SegmentId = 0 },
-                new() { Symbol = "SENSEX",    FeedType = "Quote",  SegmentId = 0 },
+                instrumentsToMonitor.Add(new() { Symbol = index.Symbol, SecurityId = index.ScripId, FeedType = "Ticker", SegmentId = 0 });
+            }
+
+            instrumentsToMonitor.AddRange(new List<DashboardInstrument>
+            {
                 new() { Symbol = "NIFTY-FUT",     IsFuture = true, UnderlyingSymbol = "NIFTY",     FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "BANKNIFTY-FUT", IsFuture = true, UnderlyingSymbol = "BANKNIFTY", FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "HDFCBANK",  FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "ICICIBANK", FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "RELIANCE",  FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "INFY",      FeedType = "Quote", SegmentId = 1 },
-            };
+            });
 
             foreach (var inst in instrumentsToMonitor)
             {
@@ -361,7 +396,7 @@ namespace TradingConsole.Wpf.ViewModels
                     }
                     else
                     {
-                        inst.SecurityId = _scripMasterService.FindIndexSecurityId(inst.Symbol) ?? _scripMasterService.FindEquitySecurityId(inst.Symbol) ?? string.Empty;
+                        inst.SecurityId = _scripMasterService.FindEquitySecurityId(inst.Symbol) ?? string.Empty;
                     }
                 }
             }
@@ -397,7 +432,7 @@ namespace TradingConsole.Wpf.ViewModels
                 var underlyingPrice = optionChainResponse.Data.UnderlyingLastPrice;
                 var allStrikes = optionChainResponse.Data.OptionChain
                     .Select(kvp => decimal.TryParse(kvp.Key, out var p) ? new { Price = p, Data = kvp.Value } : null)
-                    .Where(s => s != null && s.Data.CallOption?.SecurityId != null && s.Data.PutOption?.SecurityId != null)
+                    .Where(s => s != null)
                     .OrderBy(s => s!.Price)
                     .ToList();
 
@@ -416,7 +451,7 @@ namespace TradingConsole.Wpf.ViewModels
                         Dashboard.MonitoredInstruments.Add(new DashboardInstrument
                         {
                             Symbol = $"{indexInfo.Symbol} {strikeInfo.Price} CE",
-                            SecurityId = strikeInfo.Data.CallOption!.SecurityId,
+                            SecurityId = strikeInfo.Data.CallOption?.SecurityId ?? string.Empty,
                             FeedType = "Quote",
                             SegmentId = 2,
                             UnderlyingSymbol = indexInfo.Symbol
@@ -424,7 +459,7 @@ namespace TradingConsole.Wpf.ViewModels
                         Dashboard.MonitoredInstruments.Add(new DashboardInstrument
                         {
                             Symbol = $"{indexInfo.Symbol} {strikeInfo.Price} PE",
-                            SecurityId = strikeInfo.Data.PutOption!.SecurityId,
+                            SecurityId = strikeInfo.Data.PutOption?.SecurityId ?? string.Empty,
                             FeedType = "Quote",
                             SegmentId = 2,
                             UnderlyingSymbol = indexInfo.Symbol
@@ -499,15 +534,12 @@ namespace TradingConsole.Wpf.ViewModels
                     UnderlyingPrice = packet.LastPrice;
                 }
 
-                // --- SOLUTION FOR DATA BUG: Update the Option Chain Row ---
                 if (_optionScripMap.TryGetValue(packet.SecurityId, out var optionDetails))
                 {
                     optionDetails.LTP = packet.LastPrice;
                     optionDetails.Volume = packet.Volume;
-                    // Note: QuotePacket doesn't contain OI, so that's handled in OnOiUpdateReceived
                 }
 
-                // Update the dashboard (this was already working correctly)
                 Dashboard.UpdateQuote(packet);
             });
         }
@@ -516,13 +548,11 @@ namespace TradingConsole.Wpf.ViewModels
         {
             App.Current.Dispatcher.Invoke(() =>
             {
-                // --- SOLUTION FOR DATA BUG: Update the Option Chain Row ---
                 if (_optionScripMap.TryGetValue(packet.SecurityId, out var optionDetails))
                 {
                     optionDetails.OI = packet.OpenInterest;
                 }
 
-                // Update the dashboard
                 Dashboard.UpdateOi(packet);
             });
         }
@@ -592,12 +622,10 @@ namespace TradingConsole.Wpf.ViewModels
 
         private async Task LoadExpiryAndOptionChainAsync()
         {
-            // --- SOLUTION FOR ROBUSTNESS: Check lock ---
             if (_isDataLoading) return;
 
             try
             {
-                // --- SOLUTION FOR ROBUSTNESS: Set lock ---
                 _isDataLoading = true;
                 if (SelectedIndex == null) return;
 
@@ -629,19 +657,16 @@ namespace TradingConsole.Wpf.ViewModels
             }
             finally
             {
-                // --- SOLUTION FOR ROBUSTNESS: Release lock ---
                 _isDataLoading = false;
             }
         }
 
         private async Task LoadOptionChainOnlyAsync()
         {
-            // --- SOLUTION FOR ROBUSTNESS: Check lock ---
             if (_isDataLoading) return;
 
             try
             {
-                // --- SOLUTION FOR ROBUSTNESS: Set lock ---
                 _isDataLoading = true;
                 if (SelectedIndex == null || string.IsNullOrWhiteSpace(SelectedExpiry)) return;
 
@@ -657,7 +682,13 @@ namespace TradingConsole.Wpf.ViewModels
                         _optionScripMap.Clear();
 
                         var currentUnderlyingPrice = UnderlyingPrice;
-                        var allStrikes = optionChainResponse.Data.OptionChain.Select(kvp => decimal.TryParse(kvp.Key, out var p) ? new { Price = p, Data = kvp.Value } : null).Where(s => s != null).OrderBy(s => s.Price).ToList();
+
+                        var allStrikes = optionChainResponse.Data.OptionChain
+                            .Select(kvp => decimal.TryParse(kvp.Key, out var p) ? new { Price = p, Data = kvp.Value } : null)
+                            .Where(s => s != null)
+                            .OrderBy(s => s.Price)
+                            .ToList();
+
                         if (!allStrikes.Any()) return;
                         var atmStrike = allStrikes.OrderBy(s => Math.Abs(s.Price - currentUnderlyingPrice)).FirstOrDefault();
                         if (atmStrike == null) return;
@@ -719,7 +750,6 @@ namespace TradingConsole.Wpf.ViewModels
             }
             finally
             {
-                // --- SOLUTION FOR ROBUSTNESS: Release lock ---
                 _isDataLoading = false;
             }
         }

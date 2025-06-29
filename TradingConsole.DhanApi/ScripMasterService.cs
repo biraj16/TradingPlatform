@@ -28,15 +28,13 @@ namespace TradingConsole.DhanApi
                 var csvData = await _httpClient.GetStringAsync(ScripMasterUrl);
                 var tempMaster = new List<ScripInfo>();
 
-                // --- OPTIMIZATION: Only load the instrument types we actually need ---
                 var allowedTypes = new HashSet<string>
                 {
                     "EQUITY",
                     "FUTIDX",
                     "FUTSTK",
                     "INDEX",
-                    "OPTIDX" 
-                    // "OPTSTK" has been removed as per your requirement.
+                    "OPTIDX"
                 };
 
                 using (var reader = new StringReader(csvData))
@@ -50,7 +48,6 @@ namespace TradingConsole.DhanApi
 
                         var instrumentType = values[4] ?? string.Empty;
 
-                        // --- UPDATED LOGIC: Check if the instrument type is in our allowed list ---
                         if (allowedTypes.Contains(instrumentType))
                         {
                             var scrip = new ScripInfo
@@ -115,58 +112,14 @@ namespace TradingConsole.DhanApi
 
         public string? FindNearMonthFutureSecurityId(string baseSymbol)
         {
-            string normalizedSymbol = NormalizeSymbolForSearch(baseSymbol);
             var allFutures = _scripMaster.Where(s =>
-                (s.InstrumentType == "FUTIDX" || s.InstrumentType == "FUTSTK") &&
+                s.InstrumentType == "FUTIDX" && // Only find index futures
+                s.TradingSymbol.StartsWith(baseSymbol, StringComparison.OrdinalIgnoreCase) &&
                 s.ExpiryDate >= DateTime.Today)
                 .OrderBy(s => s.ExpiryDate)
                 .ToList();
 
-            var exactMatch = allFutures.FirstOrDefault(s =>
-                s.TradingSymbol.Equals(baseSymbol, StringComparison.OrdinalIgnoreCase));
-            if (exactMatch != null) return exactMatch.SecurityId;
-
-            if (baseSymbol.ToUpper() == "NIFTY" || baseSymbol.ToUpper() == "BANKNIFTY" || baseSymbol.ToUpper() == "FINNIFTY")
-            {
-                var indexMatch = allFutures.FirstOrDefault(s =>
-                    s.InstrumentType == "FUTIDX" &&
-                    s.SemInstrumentName.Equals(normalizedSymbol, StringComparison.OrdinalIgnoreCase));
-                if (indexMatch != null) return indexMatch.SecurityId;
-            }
-
-            var prefixMatches = allFutures.Where(s =>
-                s.TradingSymbol.StartsWith(baseSymbol, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (prefixMatches.Any()) return prefixMatches.First().SecurityId;
-
-            var candidates = allFutures.Where(s =>
-                (s.SemInstrumentName.Contains(baseSymbol, StringComparison.OrdinalIgnoreCase) ||
-                 s.TradingSymbol.Contains(baseSymbol, StringComparison.OrdinalIgnoreCase)) &&
-                !IsSymbolMismatch(baseSymbol, s.TradingSymbol))
-                .ToList();
-            return candidates.FirstOrDefault()?.SecurityId;
-        }
-
-        private bool IsSymbolMismatch(string searchSymbol, string tradingSymbol)
-        {
-            if (searchSymbol.ToUpper() == "NIFTY")
-            {
-                var upper = tradingSymbol.ToUpper();
-                return upper.Contains("BANK") || upper.Contains("FIN") || upper.Contains("MID") || upper.Contains("SMALL");
-            }
-            return false;
-        }
-
-        private string NormalizeSymbolForSearch(string symbol)
-        {
-            return symbol.ToUpperInvariant() switch
-            {
-                "NIFTY" => "NIFTY 50",
-                "BANKNIFTY" => "NIFTY BANK",
-                "FINNIFTY" => "NIFTY FIN SERVICE",
-                "MIDCPNIFTY" => "NIFTY MID SELECT",
-                _ => symbol.ToUpperInvariant()
-            };
+            return allFutures.FirstOrDefault()?.SecurityId;
         }
 
         public string? FindEquitySecurityId(string tradingSymbol)
@@ -175,11 +128,18 @@ namespace TradingConsole.DhanApi
                 s.TradingSymbol.Equals(tradingSymbol, StringComparison.OrdinalIgnoreCase))?.SecurityId;
         }
 
-        public string? FindIndexSecurityId(string tradingSymbol)
+        public string? FindIndexSecurityId(string displayName)
         {
-            string searchSymbol = NormalizeSymbolForSearch(tradingSymbol);
-            return _scripMaster.FirstOrDefault(s => s.InstrumentType == "INDEX" &&
-                s.SemInstrumentName.Equals(searchSymbol, StringComparison.OrdinalIgnoreCase))?.SecurityId;
+            var trimmedDisplayName = displayName.Trim();
+
+            // This logic is now robust. It filters for the correct InstrumentType ("INDEX") 
+            // and the correct Segment ("I" for Index) first, then finds the one with the matching display name.
+            var match = _scripMaster.FirstOrDefault(s =>
+                s.InstrumentType == "INDEX" &&
+                s.Segment == "I" &&
+                s.SemInstrumentName.Trim().Equals(trimmedDisplayName, StringComparison.OrdinalIgnoreCase));
+
+            return match?.SecurityId;
         }
 
         public string? FindSecurityId(string underlyingSymbol, string expiry, decimal strike, string optionType)
