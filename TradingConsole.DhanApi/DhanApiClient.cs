@@ -126,6 +126,24 @@ namespace TradingConsole.DhanApi
             }
         }
 
+        // --- ADDED: Method to fix the compilation error ---
+        public async Task<QuoteResponse?> GetQuoteAsync(string securityId)
+        {
+            if (string.IsNullOrEmpty(securityId)) return null;
+
+            try
+            {
+                // The endpoint for fetching a single quote.
+                HttpResponseMessage response = await _httpClient.GetAsync($"/v2/marketdata/quote/{securityId}");
+                return await HandleResponse<QuoteResponse>(response, "GetQuote");
+            }
+            catch (Exception e)
+            {
+                Debug.WriteLine($"FATAL in GetQuoteAsync: {e.Message}");
+                return null;
+            }
+        }
+
         public async Task<OrderResponse?> PlaceOrderAsync(OrderRequest orderRequest)
         {
             var requestUrl = "/v2/orders";

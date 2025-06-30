@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
 using System.Threading.Tasks;
 using TradingConsole.DhanApi.Models;
 
@@ -12,63 +13,94 @@ namespace TradingConsole.DhanApi
 {
     public class ScripMasterService
     {
+        // --- The base ScripInfo class is now sufficient, no internal class needed ---
+        public class ScripInfo
+        {
+            public string Segment { get; set; } = string.Empty;
+            public string SecurityId { get; set; } = string.Empty;
+            public string SemInstrumentName { get; set; } = string.Empty;
+            public string TradingSymbol { get; set; } = string.Empty;
+            public DateTime? ExpiryDate { get; set; }
+            public decimal StrikePrice { get; set; }
+            public string OptionType { get; set; } = string.Empty;
+            public string InstrumentType { get; set; } = string.Empty;
+            public int LotSize { get; set; }
+            public string UnderlyingSymbol { get; set; } = string.Empty;
+        }
+
         private List<ScripInfo> _scripMaster = new List<ScripInfo>();
         private readonly HttpClient _httpClient;
-        private const string ScripMasterUrl = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv";
+        // --- STRATEGY FIX: Use the simpler, more reliable compact scrip master file ---
+        private const string ScripMasterUrl = "https://images.dhan.co/api-data/api-scrip-master.csv";
 
         public ScripMasterService()
         {
-            _httpClient = new HttpClient();
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         }
 
         public async Task LoadScripMasterAsync()
         {
             try
             {
+                Debug.WriteLine("Starting to download compact scrip master CSV...");
                 var csvData = await _httpClient.GetStringAsync(ScripMasterUrl);
-                var tempMaster = new List<ScripInfo>();
+                Debug.WriteLine($"Downloaded compact CSV data: {csvData.Length} characters");
 
-                var allowedTypes = new HashSet<string>
-                {
-                    "EQUITY",
-                    "FUTIDX",
-                    "FUTSTK",
-                    "INDEX",
-                    "OPTIDX"
-                };
+                var tempMaster = new List<ScripInfo>();
+                var allowedTypes = new HashSet<string> { "EQUITY", "FUTIDX", "FUTSTK", "INDEX", "OPTIDX" };
 
                 using (var reader = new StringReader(csvData))
                 {
-                    await reader.ReadLineAsync(); // Skip header
+                    var headerLine = await reader.ReadLineAsync();
+                    if (headerLine == null) return;
+
+                    var headers = ParseCsvLine(headerLine);
+                    var headerMap = new Dictionary<string, int>();
+                    for (int i = 0; i < headers.Length; i++)
+                    {
+                        headerMap[headers[i].Trim()] = i;
+                    }
+
+                    // --- STRATEGY FIX: Validate against the known columns of the compact file ---
+                    var requiredColumns = new[] {
+                        "INSTRUMENT_TYPE", "SEGMENT", "SECURITY_ID", "UNDERLYING_SYMBOL",
+                        "SYMBOL_NAME", "TRADING_SYMBOL", "LOT_SIZE", "EXPIRY_DATE", "STRIKE_PRICE", "OPTION_TYPE"
+                    };
+
+                    foreach (var col in requiredColumns)
+                    {
+                        if (!headerMap.ContainsKey(col))
+                        {
+                            Debug.WriteLine($"CRITICAL ERROR: Required column '{col}' not found in compact file headers.");
+                            return;
+                        }
+                    }
+
                     string? line;
                     while ((line = await reader.ReadLineAsync()) != null)
                     {
                         var values = ParseCsvLine(line);
-                        if (values.Length < 15) continue;
+                        if (values.Length <= headerMap["INSTRUMENT_TYPE"]) continue;
 
-                        var instrumentType = values[4] ?? string.Empty;
+                        var instrumentType = GetSafeValue(values, headerMap, "INSTRUMENT_TYPE");
 
+                        // As you correctly instructed: only filter by instrument type.
                         if (allowedTypes.Contains(instrumentType))
                         {
                             var scrip = new ScripInfo
                             {
-                                Segment = values[1] ?? string.Empty,
-                                SecurityId = values[2] ?? string.Empty,
-                                SemInstrumentName = values[6] ?? string.Empty,
-                                UnderlyingSecurityId = values[5] ?? string.Empty,
-                                TradingSymbol = values[8] ?? string.Empty,
-                                ExpiryDate = FormatDate(values[12]),
-                                StrikePrice = decimal.TryParse(values[13], NumberStyles.Any, CultureInfo.InvariantCulture, out var sp) ? sp : 0,
-                                OptionType = values[14] ?? string.Empty,
+                                Segment = GetSafeValue(values, headerMap, "SEGMENT"),
+                                SecurityId = GetSafeValue(values, headerMap, "SECURITY_ID"),
                                 InstrumentType = instrumentType,
-                                LotSize = (int)(decimal.TryParse(values[11], NumberStyles.Any, CultureInfo.InvariantCulture, out var ds) ? ds : 0),
+                                SemInstrumentName = GetSafeValue(values, headerMap, "SYMBOL_NAME"),
+                                TradingSymbol = GetSafeValue(values, headerMap, "TRADING_SYMBOL"),
+                                UnderlyingSymbol = GetSafeValue(values, headerMap, "UNDERLYING_SYMBOL"),
+                                LotSize = ParseIntSafe(GetSafeValue(values, headerMap, "LOT_SIZE")),
+                                ExpiryDate = FormatDate(GetSafeValue(values, headerMap, "EXPIRY_DATE")),
+                                StrikePrice = ParseDecimalSafe(GetSafeValue(values, headerMap, "STRIKE_PRICE")),
+                                OptionType = GetSafeValue(values, headerMap, "OPTION_TYPE"),
                             };
-
-                            bool isDerivative = instrumentType.Contains("FUT") || instrumentType.Contains("OPT");
-                            if (!string.IsNullOrEmpty(scrip.SecurityId) && (!isDerivative || scrip.ExpiryDate.HasValue))
-                            {
-                                tempMaster.Add(scrip);
-                            }
+                            tempMaster.Add(scrip);
                         }
                     }
                 }
@@ -77,123 +109,107 @@ namespace TradingConsole.DhanApi
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Failed to load scrip master: {ex.Message}");
+                Debug.WriteLine($"Failed to load scrip master: {ex.GetType().Name} - {ex.Message}");
             }
         }
 
-        private string[] ParseCsvLine(string line)
+        // --- DEFINITIVE FIX: Bulletproof Date Parser ---
+        private DateTime? FormatDate(string dateStr)
         {
-            var values = new List<string>();
-            bool inQuotes = false;
-            var currentValue = "";
-
-            for (int i = 0; i < line.Length; i++)
+            if (string.IsNullOrWhiteSpace(dateStr)) return null;
+            string[] formats = { "dd-MMM-yy", "d-MMM-yy", "dd-MM-yyyy", "d-MM-yyyy", "dd-MMM-yyyy", "d-MMM-yyyy", "yyyy-MM-dd", "MM/dd/yyyy" };
+            foreach (var format in formats)
             {
-                char c = line[i];
-
-                if (c == '"')
+                if (DateTime.TryParseExact(dateStr.Trim(), format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
                 {
-                    inQuotes = !inQuotes;
-                }
-                else if (c == ',' && !inQuotes)
-                {
-                    values.Add(currentValue.Trim().Trim('"'));
-                    currentValue = "";
-                }
-                else
-                {
-                    currentValue += c;
+                    return date;
                 }
             }
-
-            values.Add(currentValue.Trim().Trim('"'));
-            return values.ToArray();
+            if (DateTime.TryParse(dateStr.Trim(), out var fallbackDate)) return fallbackDate;
+            return null;
         }
 
-        // --- NEW UNIFIED SEARCH STRATEGY ---
-        private IEnumerable<ScripInfo> FindInstruments(string segment, string instrumentType, string symbol, bool useSemInstrumentName = false)
-        {
-            var searchTerm = symbol.Trim();
-            return _scripMaster.Where(s =>
-                s.Segment == segment &&
-                s.InstrumentType == instrumentType &&
-                (useSemInstrumentName
-                    ? s.SemInstrumentName.Trim().Equals(searchTerm, StringComparison.OrdinalIgnoreCase)
-                    : s.TradingSymbol.Trim().Equals(searchTerm, StringComparison.OrdinalIgnoreCase))
-            );
-        }
-
+        // --- DEFINITIVE FIX: Intelligent Search Logic ---
         public string? FindNearMonthFutureSecurityId(string baseSymbol)
         {
-            // Find both Index and Stock futures in the Futures segment ('F')
-            var indexFutures = FindInstruments("F", "FUTIDX", baseSymbol, useSemInstrumentName: false);
-            var stockFutures = FindInstruments("F", "FUTSTK", baseSymbol, useSemInstrumentName: false);
+            var term = baseSymbol.Trim();
+            var result = _scripMaster
+                .Where(s => s.Segment == "F" &&
+                            (s.InstrumentType == "FUTIDX" || s.InstrumentType == "FUTSTK") &&
+                            s.UnderlyingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase) &&
+                            s.ExpiryDate.HasValue && s.ExpiryDate.Value >= DateTime.Today)
+                .OrderBy(s => s.ExpiryDate)
+                .FirstOrDefault();
 
-            var allFutures = indexFutures.Concat(stockFutures)
-                .Where(s => s.ExpiryDate >= DateTime.Today)
-                .OrderBy(s => s.ExpiryDate);
-
-            return allFutures.FirstOrDefault()?.SecurityId;
+            if (result == null) Debug.WriteLine($"[RESOLVER_FAIL] No future found for: {baseSymbol}");
+            else Debug.WriteLine($"[RESOLVER_SUCCESS] Found future: {result.TradingSymbol} | {result.SecurityId}");
+            return result?.SecurityId;
         }
 
         public string? FindEquitySecurityId(string tradingSymbol)
         {
-            // Find an Equity in the Equity segment ('E')
-            return FindInstruments("E", "EQUITY", tradingSymbol).FirstOrDefault()?.SecurityId;
+            var term = tradingSymbol.Trim();
+            var result = _scripMaster.FirstOrDefault(s => s.Segment == "E" && s.InstrumentType == "EQUITY" && s.TradingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase));
+            if (result == null) Debug.WriteLine($"[RESOLVER_FAIL] No equity found for: {tradingSymbol}");
+            else Debug.WriteLine($"[RESOLVER_SUCCESS] Found equity: {result.TradingSymbol} | {result.SecurityId}");
+            return result?.SecurityId;
         }
 
         public string? FindIndexSecurityId(string tradingSymbol)
         {
-            // Find an Index in the Index segment ('I'), searching by the SEM name
-            return FindInstruments("I", "INDEX", tradingSymbol, useSemInstrumentName: true).FirstOrDefault()?.SecurityId;
+            var term = tradingSymbol.Trim();
+            var result = _scripMaster.FirstOrDefault(s => s.Segment == "I" && s.InstrumentType == "INDEX" &&
+                                               (s.TradingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase) ||
+                                                s.SemInstrumentName.Contains(term, StringComparison.OrdinalIgnoreCase)));
+            if (result == null) Debug.WriteLine($"[RESOLVER_FAIL] No index found for: {tradingSymbol}");
+            else Debug.WriteLine($"[RESOLVER_SUCCESS] Found index: {result.SemInstrumentName} | {result.SecurityId}");
+            return result?.SecurityId;
         }
 
         public string? FindSecurityId(string underlyingSymbol, string expiry, decimal strike, string optionType)
         {
-            if (!DateTime.TryParse(expiry, out var targetDate))
-            {
-                Debug.WriteLine($"Invalid expiry date format: {expiry}");
-                return null;
-            }
+            if (!DateTime.TryParse(expiry, out var targetDate)) return null;
+            var term = underlyingSymbol.Trim();
+            var result = _scripMaster
+                .FirstOrDefault(s => s.Segment == "O" && s.InstrumentType == "OPTIDX" &&
+                                      s.UnderlyingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase) &&
+                                      s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date == targetDate.Date &&
+                                      s.StrikePrice == strike && s.OptionType.Equals(optionType, StringComparison.OrdinalIgnoreCase));
 
-            // Find both Index and Stock options in the Options segment ('O')
-            var indexOptions = FindInstruments("O", "OPTIDX", underlyingSymbol, useSemInstrumentName: false);
-            var stockOptions = FindInstruments("O", "OPTSTK", underlyingSymbol, useSemInstrumentName: false);
-
-            var result = indexOptions.Concat(stockOptions)
-                .FirstOrDefault(s =>
-                    s.ExpiryDate.HasValue &&
-                    s.ExpiryDate.Value.Date == targetDate.Date &&
-                    s.StrikePrice == strike &&
-                    s.OptionType.Equals(optionType, StringComparison.OrdinalIgnoreCase));
-
-            if (result == null)
-            {
-                Debug.WriteLine($"No option found for: {underlyingSymbol}, {expiry}, {strike}, {optionType}");
-            }
+            if (result == null) Debug.WriteLine($"No index option found for: {underlyingSymbol}, {expiry}, {strike}, {optionType}");
             return result?.SecurityId;
         }
 
-        private DateTime? FormatDate(string dateStr)
+        // Helper methods for safe parsing and CSV reading
+        private string GetSafeValue(string[] values, Dictionary<string, int> headerMap, string columnName) => headerMap.TryGetValue(columnName, out int index) && index < values.Length ? values[index]?.Trim() ?? string.Empty : string.Empty;
+        private int ParseIntSafe(string value) => decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) ? (int)result : 0;
+        private decimal ParseDecimalSafe(string value) => decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) ? result : 0;
+        private string[] ParseCsvLine(string line)
         {
-            if (string.IsNullOrWhiteSpace(dateStr)) return null;
-            string[] formats = { "dd-MM-yyyy", "dd-MMM-yyyy", "yyyy-MM-dd", "MM/dd/yyyy", "dd/MM/yyyy" };
-            if (DateTime.TryParseExact(dateStr.Trim(), formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+            var values = new List<string>();
+            var current_value = new StringBuilder();
+            bool in_quotes = false;
+            for (int i = 0; i < line.Length; i++)
             {
-                return date;
+                char c = line[i];
+                if (c == '"')
+                {
+                    if (in_quotes && i < line.Length - 1 && line[i + 1] == '"')
+                    {
+                        current_value.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        in_quotes = !in_quotes;
+                    }
+                }
+                else if (c == ',' && !in_quotes) { values.Add(current_value.ToString()); current_value.Clear(); }
+                else { current_value.Append(c); }
             }
-            if (DateTime.TryParse(dateStr.Trim(), out date))
-            {
-                return date;
-            }
-            Debug.WriteLine($"Could not parse date: {dateStr}");
-            return null;
+            values.Add(current_value.ToString());
+            return values.ToArray();
         }
-
-        public int GetLotSizeForSecurity(string securityId)
-        {
-            var match = _scripMaster.FirstOrDefault(s => s.SecurityId == securityId);
-            return match?.LotSize ?? 0;
-        }
+        public int GetLotSizeForSecurity(string securityId) => _scripMaster.FirstOrDefault(s => s.SecurityId == securityId)?.LotSize ?? 0;
     }
 }
