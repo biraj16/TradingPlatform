@@ -13,8 +13,10 @@ namespace TradingConsole.DhanApi.Models
         public string OptionType { get; set; } = string.Empty;
         public string InstrumentType { get; set; } = string.Empty;
         public int LotSize { get; set; }
-
-        // --- NEW PROPERTY TO HOLD THE CORRECT SEARCHABLE NAME ---
         public string SemInstrumentName { get; set; } = string.Empty;
+
+        // --- FIX: Added the missing property for the underlying symbol's name ---
+        public string UnderlyingSymbol { get; set; } = string.Empty;
     }
 }
+

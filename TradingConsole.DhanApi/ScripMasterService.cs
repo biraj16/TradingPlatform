@@ -13,24 +13,10 @@ namespace TradingConsole.DhanApi
 {
     public class ScripMasterService
     {
-        // --- The base ScripInfo class is now sufficient, no internal class needed ---
-        public class ScripInfo
-        {
-            public string Segment { get; set; } = string.Empty;
-            public string SecurityId { get; set; } = string.Empty;
-            public string SemInstrumentName { get; set; } = string.Empty;
-            public string TradingSymbol { get; set; } = string.Empty;
-            public DateTime? ExpiryDate { get; set; }
-            public decimal StrikePrice { get; set; }
-            public string OptionType { get; set; } = string.Empty;
-            public string InstrumentType { get; set; } = string.Empty;
-            public int LotSize { get; set; }
-            public string UnderlyingSymbol { get; set; } = string.Empty;
-        }
+        // NOTE: This service now uses the central ScripInfo class from TradingConsole.DhanApi.Models
 
         private List<ScripInfo> _scripMaster = new List<ScripInfo>();
         private readonly HttpClient _httpClient;
-        // --- STRATEGY FIX: Use the simpler, more reliable compact scrip master file ---
         private const string ScripMasterUrl = "https://images.dhan.co/api-data/api-scrip-master.csv";
 
         public ScripMasterService()
@@ -42,12 +28,12 @@ namespace TradingConsole.DhanApi
         {
             try
             {
-                Debug.WriteLine("Starting to download compact scrip master CSV...");
+                Debug.WriteLine("[ScripMaster] Starting to download compact scrip master CSV...");
                 var csvData = await _httpClient.GetStringAsync(ScripMasterUrl);
-                Debug.WriteLine($"Downloaded compact CSV data: {csvData.Length} characters");
+                Debug.WriteLine($"[ScripMaster] Downloaded compact CSV data: {csvData.Length} characters");
 
                 var tempMaster = new List<ScripInfo>();
-                var allowedTypes = new HashSet<string> { "EQUITY", "FUTIDX", "FUTSTK", "INDEX", "OPTIDX" };
+                var allowedTypes = new HashSet<string> { "EQUITY", "FUTIDX", "FUTSTK", "INDEX", "OPTIDX", "OPTSTK" };
 
                 using (var reader = new StringReader(csvData))
                 {
@@ -58,130 +44,175 @@ namespace TradingConsole.DhanApi
                     var headerMap = new Dictionary<string, int>();
                     for (int i = 0; i < headers.Length; i++)
                     {
-                        headerMap[headers[i].Trim()] = i;
+                        headerMap[headers[i].Trim().ToUpperInvariant()] = i;
                     }
 
-                    // --- STRATEGY FIX: Validate against the known columns of the compact file ---
+                    const string Col_InstrumentType = "SEM_INSTRUMENT_NAME";
+                    const string Col_Segment = "SEM_SEGMENT";
+                    const string Col_SecurityId = "SEM_SMST_SECURITY_ID";
+                    const string Col_UnderlyingSymbol = "SM_SYMBOL_NAME";
+                    const string Col_TradingSymbol = "SEM_TRADING_SYMBOL";
+                    const string Col_LotSize = "SEM_LOT_UNITS";
+                    const string Col_ExpiryDate = "SEM_EXPIRY_DATE";
+                    const string Col_StrikePrice = "SEM_STRIKE_PRICE";
+                    const string Col_OptionType = "SEM_OPTION_TYPE";
+                    const string Col_CustomSymbol = "SEM_CUSTOM_SYMBOL";
+
                     var requiredColumns = new[] {
-                        "INSTRUMENT_TYPE", "SEGMENT", "SECURITY_ID", "UNDERLYING_SYMBOL",
-                        "SYMBOL_NAME", "TRADING_SYMBOL", "LOT_SIZE", "EXPIRY_DATE", "STRIKE_PRICE", "OPTION_TYPE"
+                        Col_InstrumentType, Col_Segment, Col_SecurityId, Col_UnderlyingSymbol,
+                        Col_TradingSymbol, Col_LotSize, Col_ExpiryDate, Col_StrikePrice, Col_OptionType, Col_CustomSymbol
                     };
 
                     foreach (var col in requiredColumns)
                     {
-                        if (!headerMap.ContainsKey(col))
+                        if (!headerMap.ContainsKey(col.ToUpperInvariant()))
                         {
-                            Debug.WriteLine($"CRITICAL ERROR: Required column '{col}' not found in compact file headers.");
+                            Debug.WriteLine($"[ScripMaster] CRITICAL ERROR: Required column '{col}' not found in compact file headers.");
                             return;
                         }
                     }
 
                     string? line;
+                    int parsedCount = 0;
                     while ((line = await reader.ReadLineAsync()) != null)
                     {
                         var values = ParseCsvLine(line);
-                        if (values.Length <= headerMap["INSTRUMENT_TYPE"]) continue;
+                        if (values.Length <= requiredColumns.Max(c => headerMap[c.ToUpperInvariant()])) continue;
 
-                        var instrumentType = GetSafeValue(values, headerMap, "INSTRUMENT_TYPE");
+                        var instrumentType = GetSafeValue(values, headerMap, Col_InstrumentType);
 
-                        // As you correctly instructed: only filter by instrument type.
                         if (allowedTypes.Contains(instrumentType))
                         {
                             var scrip = new ScripInfo
                             {
-                                Segment = GetSafeValue(values, headerMap, "SEGMENT"),
-                                SecurityId = GetSafeValue(values, headerMap, "SECURITY_ID"),
+                                Segment = GetSafeValue(values, headerMap, Col_Segment),
+                                SecurityId = GetSafeValue(values, headerMap, Col_SecurityId),
                                 InstrumentType = instrumentType,
-                                SemInstrumentName = GetSafeValue(values, headerMap, "SYMBOL_NAME"),
-                                TradingSymbol = GetSafeValue(values, headerMap, "TRADING_SYMBOL"),
-                                UnderlyingSymbol = GetSafeValue(values, headerMap, "UNDERLYING_SYMBOL"),
-                                LotSize = ParseIntSafe(GetSafeValue(values, headerMap, "LOT_SIZE")),
-                                ExpiryDate = FormatDate(GetSafeValue(values, headerMap, "EXPIRY_DATE")),
-                                StrikePrice = ParseDecimalSafe(GetSafeValue(values, headerMap, "STRIKE_PRICE")),
-                                OptionType = GetSafeValue(values, headerMap, "OPTION_TYPE"),
+                                SemInstrumentName = GetSafeValue(values, headerMap, Col_CustomSymbol),
+                                TradingSymbol = GetSafeValue(values, headerMap, Col_TradingSymbol),
+                                UnderlyingSymbol = GetSafeValue(values, headerMap, Col_UnderlyingSymbol),
+                                LotSize = ParseIntSafe(GetSafeValue(values, headerMap, Col_LotSize)),
+                                ExpiryDate = FormatDate(GetSafeValue(values, headerMap, Col_ExpiryDate)),
+                                StrikePrice = ParseDecimalSafe(GetSafeValue(values, headerMap, Col_StrikePrice)),
+                                OptionType = GetSafeValue(values, headerMap, Col_OptionType),
                             };
                             tempMaster.Add(scrip);
+
+                            if (parsedCount < 10 && scrip.InstrumentType == "FUTIDX")
+                            {
+                                Debug.WriteLine($"[ScripMaster] Parsed FUTIDX: ID={scrip.SecurityId}, Name(Custom)='{scrip.SemInstrumentName}', Underlying(SM_Symbol)='{scrip.UnderlyingSymbol}'");
+                                parsedCount++;
+                            }
                         }
                     }
                 }
                 _scripMaster = tempMaster;
-                Debug.WriteLine($"Scrip Master loaded with {_scripMaster.Count} relevant instruments.");
+                Debug.WriteLine($"[ScripMaster] Scrip Master loaded with {_scripMaster.Count} relevant instruments.");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Failed to load scrip master: {ex.GetType().Name} - {ex.Message}");
+                Debug.WriteLine($"[ScripMaster] FAILED to load scrip master: {ex.GetType().Name} - {ex.Message}");
+                Debug.WriteLine(ex.StackTrace);
             }
         }
 
-        // --- DEFINITIVE FIX: Bulletproof Date Parser ---
         private DateTime? FormatDate(string dateStr)
         {
-            if (string.IsNullOrWhiteSpace(dateStr)) return null;
-            string[] formats = { "dd-MMM-yy", "d-MMM-yy", "dd-MM-yyyy", "d-MM-yyyy", "dd-MMM-yyyy", "d-MMM-yyyy", "yyyy-MM-dd", "MM/dd/yyyy" };
-            foreach (var format in formats)
+            if (string.IsNullOrWhiteSpace(dateStr) || dateStr == "0") return null;
+            if (DateTime.TryParseExact(dateStr.Trim(), "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
             {
-                if (DateTime.TryParseExact(dateStr.Trim(), format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
-                {
-                    return date;
-                }
+                return date;
             }
-            if (DateTime.TryParse(dateStr.Trim(), out var fallbackDate)) return fallbackDate;
             return null;
-        }
-
-        // --- DEFINITIVE FIX: Intelligent Search Logic ---
-        public string? FindNearMonthFutureSecurityId(string baseSymbol)
-        {
-            var term = baseSymbol.Trim();
-            var result = _scripMaster
-                .Where(s => s.Segment == "F" &&
-                            (s.InstrumentType == "FUTIDX" || s.InstrumentType == "FUTSTK") &&
-                            s.UnderlyingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase) &&
-                            s.ExpiryDate.HasValue && s.ExpiryDate.Value >= DateTime.Today)
-                .OrderBy(s => s.ExpiryDate)
-                .FirstOrDefault();
-
-            if (result == null) Debug.WriteLine($"[RESOLVER_FAIL] No future found for: {baseSymbol}");
-            else Debug.WriteLine($"[RESOLVER_SUCCESS] Found future: {result.TradingSymbol} | {result.SecurityId}");
-            return result?.SecurityId;
         }
 
         public string? FindEquitySecurityId(string tradingSymbol)
         {
+            Debug.WriteLine($"[ScripMaster_Find] Searching for EQUITY: '{tradingSymbol}'");
             var term = tradingSymbol.Trim();
-            var result = _scripMaster.FirstOrDefault(s => s.Segment == "E" && s.InstrumentType == "EQUITY" && s.TradingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase));
-            if (result == null) Debug.WriteLine($"[RESOLVER_FAIL] No equity found for: {tradingSymbol}");
-            else Debug.WriteLine($"[RESOLVER_SUCCESS] Found equity: {result.TradingSymbol} | {result.SecurityId}");
+            var result = _scripMaster.FirstOrDefault(s => s.InstrumentType == "EQUITY" && s.TradingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase));
+
+            if (result == null) Debug.WriteLine($"[ScripMaster_Find] FAIL - No equity found for: '{tradingSymbol}'");
+            else Debug.WriteLine($"[ScripMaster_Find] SUCCESS - Found equity: {result.TradingSymbol} | ID: {result.SecurityId}");
+
             return result?.SecurityId;
         }
 
         public string? FindIndexSecurityId(string tradingSymbol)
         {
+            Debug.WriteLine($"[ScripMaster_Find] Searching for SPOT INDEX using SM_SYMBOL_NAME: '{tradingSymbol}'");
             var term = tradingSymbol.Trim();
-            var result = _scripMaster.FirstOrDefault(s => s.Segment == "I" && s.InstrumentType == "INDEX" &&
-                                               (s.TradingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase) ||
-                                                s.SemInstrumentName.Contains(term, StringComparison.OrdinalIgnoreCase)));
-            if (result == null) Debug.WriteLine($"[RESOLVER_FAIL] No index found for: {tradingSymbol}");
-            else Debug.WriteLine($"[RESOLVER_SUCCESS] Found index: {result.SemInstrumentName} | {result.SecurityId}");
+            // Spot indices use the SM_SYMBOL_NAME column, which is mapped to our UnderlyingSymbol property.
+            var result = _scripMaster.FirstOrDefault(s => s.InstrumentType == "INDEX" && s.UnderlyingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase));
+
+            if (result == null) Debug.WriteLine($"[ScripMaster_Find] FAIL - No spot index found for: '{tradingSymbol}'");
+            else Debug.WriteLine($"[ScripMaster_Find] SUCCESS - Found spot index: {result.UnderlyingSymbol} | ID: {result.SecurityId}");
+
             return result?.SecurityId;
         }
 
-        public string? FindSecurityId(string underlyingSymbol, string expiry, decimal strike, string optionType)
+        // This is a private helper method for finding derivatives.
+        private ScripInfo? FindDerivative(string baseSymbol)
         {
-            if (!DateTime.TryParse(expiry, out var targetDate)) return null;
-            var term = underlyingSymbol.Trim();
-            var result = _scripMaster
-                .FirstOrDefault(s => s.Segment == "O" && s.InstrumentType == "OPTIDX" &&
-                                      s.UnderlyingSymbol.Equals(term, StringComparison.OrdinalIgnoreCase) &&
-                                      s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date == targetDate.Date &&
-                                      s.StrikePrice == strike && s.OptionType.Equals(optionType, StringComparison.OrdinalIgnoreCase));
+            var term = baseSymbol.Trim();
+            // Derivatives use the SEM_CUSTOM_SYMBOL column, which is mapped to our SemInstrumentName property.
+            Debug.WriteLine($"[ScripMaster_Find] Searching for DERIVATIVE using SEM_CUSTOM_SYMBOL containing: '{term}'");
+            return _scripMaster
+                .Where(s => (s.InstrumentType == "FUTIDX" || s.InstrumentType == "FUTSTK") &&
+                            s.SemInstrumentName.Contains(term, StringComparison.OrdinalIgnoreCase) &&
+                            s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date >= DateTime.Today)
+                .OrderBy(s => s.ExpiryDate)
+                .FirstOrDefault();
+        }
 
-            if (result == null) Debug.WriteLine($"No index option found for: {underlyingSymbol}, {expiry}, {strike}, {optionType}");
+        public string? FindDerivativeSecurityId(string baseSymbol)
+        {
+            Debug.WriteLine($"[ScripMaster_Find] Request for DERIVATIVE ID for: '{baseSymbol}'");
+            var future = FindDerivative(baseSymbol);
+
+            if (future == null) Debug.WriteLine($"[ScripMaster_Find] FAIL - No derivative contract found for: '{baseSymbol}'");
+            else Debug.WriteLine($"[ScripMaster_Find] SUCCESS - Found derivative ID via future {future.TradingSymbol}: {future.SecurityId}");
+
+            return future?.SecurityId;
+        }
+
+        public string? FindNearMonthFutureSecurityId(string baseSymbol)
+        {
+            Debug.WriteLine($"[ScripMaster_Find] Request for NEAR MONTH FUTURE for: '{baseSymbol}'");
+            var result = FindDerivative(baseSymbol);
+
+            if (result == null) Debug.WriteLine($"[ScripMaster_Find] FAIL - No future found for: '{baseSymbol}'");
+            else Debug.WriteLine($"[ScripMaster_Find] SUCCESS - Found future: {result.TradingSymbol} | ID: {result.SecurityId}");
+
             return result?.SecurityId;
         }
 
-        // Helper methods for safe parsing and CSV reading
-        private string GetSafeValue(string[] values, Dictionary<string, int> headerMap, string columnName) => headerMap.TryGetValue(columnName, out int index) && index < values.Length ? values[index]?.Trim() ?? string.Empty : string.Empty;
+        public string? FindOptionSecurityId(string underlyingSymbol, DateTime expiryDate, decimal strikePrice, string optionType)
+        {
+            Debug.WriteLine($"[ScripMaster_Find] Searching for OPTION using SEM_CUSTOM_SYMBOL: {underlyingSymbol} {expiryDate:ddMMMyy} {strikePrice} {optionType}");
+            var term = underlyingSymbol.Trim();
+            var type = optionType.Trim().ToUpperInvariant();
+
+            // Options also use the SEM_CUSTOM_SYMBOL column for their descriptive name.
+            var result = _scripMaster
+                .FirstOrDefault(s => (s.InstrumentType == "OPTIDX" || s.InstrumentType == "OPTSTK") &&
+                                      s.SemInstrumentName.Contains(term, StringComparison.OrdinalIgnoreCase) &&
+                                      s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date == expiryDate.Date &&
+                                      s.StrikePrice == strikePrice &&
+                                      s.OptionType.Equals(type, StringComparison.OrdinalIgnoreCase));
+
+            if (result == null) Debug.WriteLine($"[ScripMaster_Find] FAIL - No option found for the given parameters.");
+            else Debug.WriteLine($"[ScripMaster_Find] SUCCESS - Found option: {result.TradingSymbol} | ID: {result.SecurityId}");
+
+            return result?.SecurityId;
+        }
+
+
+        private string GetSafeValue(string[] values, Dictionary<string, int> headerMap, string columnName)
+        {
+            var upperColumnName = columnName.ToUpperInvariant();
+            return headerMap.TryGetValue(upperColumnName, out int index) && index < values.Length ? values[index]?.Trim() ?? string.Empty : string.Empty;
+        }
         private int ParseIntSafe(string value) => decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) ? (int)result : 0;
         private decimal ParseDecimalSafe(string value) => decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result) ? result : 0;
         private string[] ParseCsvLine(string line)
