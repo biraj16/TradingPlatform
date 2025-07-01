@@ -93,6 +93,9 @@ namespace TradingConsole.DhanApi
                 string jsonPayload = JsonConvert.SerializeObject(payload);
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
+                // --- DEBUGGING: Log the exact payload being sent ---
+                Debug.WriteLine($"[DhanApiClient_GetExpiryList] Request Payload: {jsonPayload}");
+
                 HttpResponseMessage response = await _httpClient.PostAsync("/v2/optionchain/expirylist", content);
                 return await HandleResponse<ExpiryListResponse>(response, "GetExpiryList");
             }
@@ -116,6 +119,9 @@ namespace TradingConsole.DhanApi
                 string jsonPayload = JsonConvert.SerializeObject(payload);
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
+                // --- DEBUGGING: Log the exact payload being sent ---
+                Debug.WriteLine($"[DhanApiClient_GetOptionChain] Request Payload: {jsonPayload}");
+
                 HttpResponseMessage response = await _httpClient.PostAsync("/v2/optionchain", content);
                 return await HandleResponse<OptionChainResponse>(response, "GetOptionChain");
             }
@@ -126,14 +132,12 @@ namespace TradingConsole.DhanApi
             }
         }
 
-        // --- ADDED: Method to fix the compilation error ---
         public async Task<QuoteResponse?> GetQuoteAsync(string securityId)
         {
             if (string.IsNullOrEmpty(securityId)) return null;
 
             try
             {
-                // The endpoint for fetching a single quote.
                 HttpResponseMessage response = await _httpClient.GetAsync($"/v2/marketdata/quote/{securityId}");
                 return await HandleResponse<QuoteResponse>(response, "GetQuote");
             }
@@ -194,30 +198,27 @@ namespace TradingConsole.DhanApi
             }
         }
 
-        // --- CORRECTED: Method now points to the correct Super Order endpoint ---
         public async Task<OrderResponse?> PlaceSuperOrderAsync(SuperOrderRequest orderRequest)
         {
-            var requestUrl = "/v2/super/orders"; // CORRECTED URL
+            var requestUrl = "/v2/super/orders";
             var jsonPayload = JsonConvert.SerializeObject(orderRequest);
             var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
             var response = await _httpClient.PostAsync(requestUrl, httpContent);
             return await HandleResponse<OrderResponse>(response, "PlaceSuperOrder");
         }
 
-        // --- CORRECTED: Method now points to the correct Super Order endpoint ---
         public async Task<OrderResponse?> ModifySuperOrderAsync(ModifySuperOrderRequest modifyRequest)
         {
-            var requestUrl = $"/v2/super/orders/{modifyRequest.OrderId}"; // CORRECTED URL
+            var requestUrl = $"/v2/super/orders/{modifyRequest.OrderId}";
             var jsonPayload = JsonConvert.SerializeObject(modifyRequest);
             var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
             var response = await _httpClient.PutAsync(requestUrl, httpContent);
             return await HandleResponse<OrderResponse>(response, "ModifySuperOrder");
         }
 
-        // --- CORRECTED: Method now points to the correct Super Order endpoint ---
         public async Task<OrderResponse?> CancelSuperOrderAsync(string orderId)
         {
-            var requestUrl = $"/v2/super/orders/{orderId}"; // CORRECTED URL
+            var requestUrl = $"/v2/super/orders/{orderId}";
             var response = await _httpClient.DeleteAsync(requestUrl);
             return await HandleResponse<OrderResponse>(response, "CancelSuperOrder");
         }
