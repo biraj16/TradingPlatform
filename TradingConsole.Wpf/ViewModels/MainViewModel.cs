@@ -362,7 +362,9 @@ namespace TradingConsole.Wpf.ViewModels
             await LoadPortfolioAsync();
             await LoadOrdersAsync();
 
-            _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, Timeout.Infinite, Timeout.Infinite);
+            // Start the option chain refresh timer after initial data load
+            _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+
 
             var initialIndex = Indices.FirstOrDefault();
             if (initialIndex != null) await App.Current.Dispatcher.InvokeAsync(() => { SelectedIndex = initialIndex; });
@@ -664,7 +666,7 @@ namespace TradingConsole.Wpf.ViewModels
 
         private void OnQuoteUpdateReceived(QuotePacket packet)
         {
-            _analysisService.OnAnalysisReceived(packet);
+            _analysisService.OnQuoteReceived(packet); // Changed from OnAnalysisReceived to OnQuoteReceived
 
             App.Current.Dispatcher.Invoke(() =>
             {
@@ -777,12 +779,12 @@ namespace TradingConsole.Wpf.ViewModels
 
                 // --- CRITICAL FIX: Find the near-month future ScripInfo for the selected index ---
                 // This is the primary way to get expiry lists and option chains for indices.
-                ScripInfo? futureScrip = _scripMasterService.FindNearMonthFutureSecurityId(SelectedIndex.Symbol); // IndexInfo.Symbol is "Nifty 50", "Nifty Bank", "Sensex"
+                ScripInfo? futureScrip = _scripMasterService.FindNearMonthFutureSecurityId(SelectedIndex.Symbol); // Use SelectedIndex.Symbol
 
                 if (futureScrip == null || string.IsNullOrEmpty(futureScrip.SecurityId))
                 {
-                    await UpdateStatusAsync($"Could not find near-month future for {SelectedIndex.Name}. Cannot load options.");
-                    Debug.WriteLine($"[OptionChain] Failed to find future ScripInfo for {SelectedIndex.Name} ({SelectedIndex.Symbol}). Aborting option chain load.");
+                    await UpdateStatusAsync($"Could not find near-month future for {SelectedIndex.Name}. Cannot load options."); // Use SelectedIndex.Name
+                    Debug.WriteLine($"[OptionChain] Failed to find future ScripInfo for {SelectedIndex.Name} ({SelectedIndex.Symbol}). Aborting option chain load."); // Use SelectedIndex.Name and SelectedIndex.Symbol
                     App.Current.Dispatcher.Invoke(ExpiryDates.Clear);
                     App.Current.Dispatcher.Invoke(OptionChainRows.Clear);
                     return;
@@ -791,115 +793,140 @@ namespace TradingConsole.Wpf.ViewModels
                 apiSecurityId = futureScrip.SecurityId;
                 apiSegment = futureScrip.Segment; // Use the segment from the found future (e.g., "NSE_FNO" or "BSE_FNO")
 
-                Debug.WriteLine($"[OptionChain] Fetching expiry dates for {SelectedIndex.Name} using FUTURE SecurityId: {apiSecurityId} and Segment: {apiSegment}");
+                // Store these for subsequent refreshes
+                _lastApiSecurityIdUsed = apiSecurityId;
+                _lastApiSegmentUsed = apiSegment;
+
+                Debug.WriteLine($"[OptionChain] Fetching expiry dates for {SelectedIndex.Name} using FUTURE SecurityId: {apiSecurityId} and Segment: {apiSegment}"); // Use SelectedIndex.Name
                 expiryListResponse = await _apiClient.GetExpiryListAsync(apiSecurityId, apiSegment);
 
                 if (expiryListResponse?.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
                 {
-                    await UpdateStatusAsync($"Could not get expiry dates for {SelectedIndex.Name} using future contract.");
-                    Debug.WriteLine($"[OptionChain] No expiry dates found for {SelectedIndex.Name} (Future ID: {apiSecurityId}). Aborting option chain load.");
+                    await UpdateStatusAsync($"Could not get expiry dates for {SelectedIndex.Name} using future contract."); // Use SelectedIndex.Name
+                    Debug.WriteLine($"[OptionChain] No expiry dates found for {SelectedIndex.Name} (Future ID: {apiSecurityId}). Aborting option chain load."); // Use SelectedIndex.Name
                     return;
                 }
 
-                string? nearestExpiry = expiryListResponse.ExpiryDates.FirstOrDefault();
-                if (string.IsNullOrEmpty(nearestExpiry))
+                App.Current.Dispatcher.Invoke(() =>
                 {
-                    Debug.WriteLine($"[AddIndexOptions] Nearest expiry is null or empty for {indexInfo.Name}. Aborting option dashboard load.");
-                    return;
-                }
-
-                await Task.Delay(1100); // Respect API rate limits
-
-                Debug.WriteLine($"[AddIndexOptions] Fetching option chain for {indexInfo.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {nearestExpiry}).");
-                await UpdateStatusAsync($"Fetching option chain for {indexInfo.Name}...");
-
-                // Use the determined apiSecurityId and apiSegment for GetOptionChainAsync
-                var optionChainResponse = await _apiClient.GetOptionChainAsync(apiSecurityId, apiSegment, nearestExpiry);
-                if (optionChainResponse?.Data?.OptionChain == null)
-                {
-                    await UpdateStatusAsync($"Failed to load option chain for {indexInfo.Name}.");
-                    Debug.WriteLine($"[AddIndexOptions] Option chain data is null for {indexInfo.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {nearestExpiry})");
-                    return;
-                }
-
-                var underlyingPrice = optionChainResponse.Data.UnderlyingLastPrice;
-                var allStrikes = optionChainResponse.Data.OptionChain
-                    .Select(kvp => decimal.TryParse(kvp.Key, out var p) ? new { Price = p, Data = kvp.Value } : null)
-                    .Where(s => s != null)
-                    .OrderBy(s => s!.Price)
-                    .ToList();
-
-                if (!allStrikes.Any())
-                {
-                    Debug.WriteLine($"[AddIndexOptions] No strikes found in option chain for {indexInfo.Name}. Aborting option dashboard load.");
-                    return;
-                }
-
-                var atmStrikeData = allStrikes.OrderBy(s => Math.Abs(s!.Price - underlyingPrice)).First();
-                var atmIndex = allStrikes.IndexOf(atmStrikeData!);
-
-                int startIndex = Math.Max(0, atmIndex - 4);
-                int endIndex = Math.Min(allStrikes.Count - 1, atmIndex + 4);
-
-                for (int i = startIndex; i <= endIndex; i++)
-                {
-                    var strikeInfo = allStrikes[i]!;
-                    if (strikeInfo.Data == null) continue;
-
-                    string formattedStrike = strikeInfo.Price.ToString("G29");
-
-                    if (strikeInfo.Data.CallOption != null)
+                    ExpiryDates.Clear();
+                    foreach (var expiry in expiryListResponse.ExpiryDates.OrderBy(d => DateTime.ParseExact(d, "yyyy-MM-dd", CultureInfo.InvariantCulture)))
                     {
-                        await App.Current.Dispatcher.InvokeAsync(() => {
-                            // CRITICAL FIX: Ensure no duplicate SecurityIds are added to MonitoredInstruments here either
-                            if (!Dashboard.MonitoredInstruments.Any(x => x.SecurityId == strikeInfo.Data.CallOption.SecurityId))
-                            {
-                                Dashboard.MonitoredInstruments.Add(new DashboardInstrument
-                                {
-                                    Symbol = $"{indexInfo.Symbol} {formattedStrike} CE",
-                                    SecurityId = strikeInfo.Data.CallOption.SecurityId,
-                                    FeedType = "Quote",
-                                    SegmentId = GetSegmentIdFromName(futureScrip.Segment), // Use segment from future
-                                    UnderlyingSymbol = indexInfo.Symbol
-                                });
-                            }
-                            else
-                            {
-                                Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Call Option (SecurityId: {strikeInfo.Data.CallOption.SecurityId}) for dashboard: {indexInfo.Symbol} {formattedStrike} CE");
-                            }
-                        });
+                        ExpiryDates.Add(expiry);
                     }
+                    SelectedExpiry = ExpiryDates.FirstOrDefault(); // Automatically select the nearest expiry
+                });
 
-                    if (strikeInfo.Data.PutOption != null)
-                    {
-                        await App.Current.Dispatcher.InvokeAsync(() => {
-                            // CRITICAL FIX: Ensure no duplicate SecurityIds are added to MonitoredInstruments here either
-                            if (!Dashboard.MonitoredInstruments.Any(x => x.SecurityId == strikeInfo.Data.PutOption.SecurityId))
-                            {
-                                Dashboard.MonitoredInstruments.Add(new DashboardInstrument
-                                {
-                                    Symbol = $"{indexInfo.Symbol} {formattedStrike} PE",
-                                    SecurityId = strikeInfo.Data.PutOption.SecurityId,
-                                    FeedType = "Quote",
-                                    SegmentId = GetSegmentIdFromName(futureScrip.Segment), // Use segment from future
-                                    UnderlyingSymbol = indexInfo.Symbol
-                                });
-                            }
-                            else
-                            {
-                                Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Put Option (SecurityId: {strikeInfo.Data.PutOption.SecurityId}) for dashboard: {indexInfo.Symbol} {formattedStrike} PE");
-                            }
-                        });
-                    }
+                // Now load the option chain for the selected expiry
+                if (!string.IsNullOrEmpty(SelectedExpiry))
+                {
+                    await LoadOptionChainOnlyAsync(apiSecurityId, apiSegment);
                 }
-                await UpdateStatusAsync($"Successfully added options for {indexInfo.Name} to dashboard.");
+            }
+            catch (DhanApiException ex)
+            {
+                await UpdateStatusAsync(ex.Message);
             }
             catch (Exception ex)
             {
-                await UpdateStatusAsync($"Error adding options for {indexInfo.Name}: {ex.Message}");
-                Debug.WriteLine($"[AddIndexOptions] Error fetching options for {indexInfo.Name}: {ex}");
+                await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                Debug.WriteLine($"[OptionChain] Error in LoadExpiryAndOptionChainAsync: {ex}");
+            }
+            finally
+            {
+                _isDataLoading = false;
             }
         }
+
+        private async Task LoadOptionChainOnlyAsync(string apiSecurityId, string apiSegment)
+        {
+            if (SelectedIndex == null || string.IsNullOrWhiteSpace(SelectedExpiry) || string.IsNullOrEmpty(apiSecurityId) || string.IsNullOrEmpty(apiSegment)) return;
+
+            try
+            {
+                await UpdateStatusAsync($"Fetching option chain for {SelectedIndex.Name} - {SelectedExpiry}..."); // Use SelectedIndex.Name
+                Debug.WriteLine($"[OptionChain] Fetching option chain for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry})."); // Use SelectedIndex.Name
+
+                var optionChainResponse = await _apiClient.GetOptionChainAsync(apiSecurityId, apiSegment, SelectedExpiry);
+
+                await App.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    OptionChainRows.Clear();
+                    _optionScripMap.Clear();
+                    TotalCallOi = 0;
+                    TotalPutOi = 0;
+                    TotalCallVolume = 0;
+                    TotalPutVolume = 0;
+                    PcrOi = 0;
+                    MaxOi = 0;
+                    MaxOiChange = 0;
+                });
+
+                if (optionChainResponse?.Data?.OptionChain != null)
+                {
+                    await App.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        UnderlyingPrice = optionChainResponse.Data.UnderlyingLastPrice;
+
+                        var allStrikes = optionChainResponse.Data.OptionChain
+                            .Select(kvp => decimal.TryParse(kvp.Key, out var p) ? new { Price = p, Data = kvp.Value } : null)
+                            .Where(s => s != null)
+                            .OrderBy(s => s!.Price)
+                            .ToList();
+
+                        var currentUnderlyingPrice = UnderlyingPrice;
+                        var atmStrikeData = allStrikes.OrderBy(s => Math.Abs(s!.Price - currentUnderlyingPrice)).First();
+
+                        foreach (var strikeInfo in allStrikes)
+                        {
+                            if (strikeInfo?.Data == null) continue;
+
+                            var callOptionDetails = MapToOptionDetails(strikeInfo.Data.CallOption);
+                            var putOptionDetails = MapToOptionDetails(strikeInfo.Data.PutOption);
+
+                            // Populate _optionScripMap for WebSocket updates
+                            if (!string.IsNullOrEmpty(callOptionDetails.SecurityId))
+                            {
+                                _optionScripMap[callOptionDetails.SecurityId] = callOptionDetails;
+                            }
+                            if (!string.IsNullOrEmpty(putOptionDetails.SecurityId))
+                            {
+                                _optionScripMap[putOptionDetails.SecurityId] = putOptionDetails;
+                            }
+
+                            OptionChainRows.Add(new OptionChainRow
+                            {
+                                StrikePrice = strikeInfo.Price,
+                                CallOption = callOptionDetails,
+                                PutOption = putOptionDetails,
+                                IsAtm = strikeInfo.Price == atmStrikeData.Price,
+                                CallState = strikeInfo.Price < currentUnderlyingPrice ? OptionState.ITM :
+                                            (currentUnderlyingPrice == strikeInfo.Price ? OptionState.ATM : OptionState.OTM),
+                                PutState = strikeInfo.Price > currentUnderlyingPrice ? OptionState.ITM :
+                                           (currentUnderlyingPrice == strikeInfo.Price ? OptionState.ATM : OptionState.OTM)
+                            });
+                        }
+                        CalculateOptionChainAggregates();
+                    });
+                    await UpdateStatusAsync($"Option chain for {SelectedIndex.Name} - {SelectedExpiry} loaded."); // Use SelectedIndex.Name
+                }
+                else
+                {
+                    await UpdateStatusAsync($"Failed to load option chain for {SelectedIndex.Name} - {SelectedExpiry}. Data is null."); // Use SelectedIndex.Name
+                    Debug.WriteLine($"[OptionChain] Option chain data is null for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry})"); // Use SelectedIndex.Name
+                }
+            }
+            catch (DhanApiException ex)
+            {
+                await UpdateStatusAsync(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                Debug.WriteLine($"[OptionChain] Error in LoadOptionChainOnlyAsync: {ex}");
+            }
+        }
+
 
         private async Task RefreshOptionChainDataAsync()
         {
