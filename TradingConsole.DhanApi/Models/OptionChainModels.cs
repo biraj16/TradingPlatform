@@ -21,6 +21,8 @@ namespace TradingConsole.DhanApi.Models
         public string ScripId { get; set; } = string.Empty;
         public string Segment { get; set; } = string.Empty;
         public string Symbol { get; set; } = string.Empty;
+        // CRITICAL FIX: Added ExchId to TickerIndex model
+        public string ExchId { get; set; } = string.Empty;
         public override string ToString() => Name;
     }
 
@@ -57,9 +59,11 @@ namespace TradingConsole.DhanApi.Models
         private int _openInterest;
         private long _volume;
         private Greeks? _greeks;
+        private string _securityId = string.Empty; // Ensure it's initialized
 
+        // CRITICAL FIX: Add JsonProperty attribute to SecurityId
         [JsonProperty("securityId")]
-        public string SecurityId { get; set; } = string.Empty;
+        public string SecurityId { get => _securityId; set { _securityId = value; OnPropertyChanged(nameof(SecurityId)); } }
 
         [JsonProperty("last_price")]
         public decimal LastPrice

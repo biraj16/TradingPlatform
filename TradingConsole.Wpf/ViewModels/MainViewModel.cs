@@ -93,8 +93,14 @@ namespace TradingConsole.Wpf.ViewModels
                 {
                     _selectedExpiry = value;
                     OnPropertyChanged(nameof(SelectedExpiry));
-                    // This is for manual changes by the user
-                    Task.Run(() => LoadOptionChainOnlyAsync(_lastApiSecurityIdUsed, _lastApiSegmentUsed)); // Pass last used API parameters
+                    // CRITICAL FIX: Only trigger LoadOptionChainOnlyAsync if the change
+                    // is NOT due to LoadExpiryAndOptionChainAsync setting the initial expiry.
+                    // This prevents redundant calls and potential rate limit issues.
+                    // We check if _isDataLoading is false, which indicates a user-initiated change.
+                    if (!_isDataLoading && !string.IsNullOrEmpty(_selectedExpiry))
+                    {
+                        Task.Run(() => LoadOptionChainOnlyAsync(_lastApiSecurityIdUsed, _lastApiSegmentUsed));
+                    }
                 }
             }
         }
@@ -288,9 +294,14 @@ namespace TradingConsole.Wpf.ViewModels
             Task.Run(LoadPortfolioAsync);
         }
 
+        // CRITICAL FIX: Added missing OpenOrderWindowForPosition method
         private void OpenOrderWindowForPosition(Position position, bool isBuy)
         {
-            var orderViewModel = new OrderEntryViewModel(position, isBuy, _apiClient, _dhanClientId, _scripMasterService, "NSE_FNO");
+            // You'll need to decide what information is relevant for opening an order window from a position.
+            // For now, I'll assume it's similar to opening from an option, but with position details.
+            // You might need to adjust the OrderEntryViewModel constructor or create a new one for positions.
+            string instrumentName = position.Ticker; // Use the position's ticker as the instrument name
+            var orderViewModel = new OrderEntryViewModel(position, isBuy, _apiClient, _dhanClientId, _scripMasterService, position.ProductType); // Pass relevant position details
             var orderWindow = new OrderEntryWindow { DataContext = orderViewModel, Owner = Application.Current.MainWindow };
             orderWindow.ShowDialog();
             Task.Run(LoadPortfolioAsync);
@@ -330,8 +341,10 @@ namespace TradingConsole.Wpf.ViewModels
             foreach (var pair in symbolsToLoad)
             {
                 // FindIndexSecurityId now expects the full index name
-                var securityId = _scripMasterService.FindIndexSecurityId(pair.Value);
-                if (!string.IsNullOrEmpty(securityId))
+                // CRITICAL FIX: Get the full ScripInfo for the index to retrieve ExchId
+                ScripInfo? indexScripInfo = _scripMasterService.FindIndexScripInfo(pair.Value);
+
+                if (indexScripInfo != null && !string.IsNullOrEmpty(indexScripInfo.SecurityId))
                 {
                     App.Current.Dispatcher.Invoke(() =>
                     {
@@ -339,8 +352,9 @@ namespace TradingConsole.Wpf.ViewModels
                         {
                             Name = pair.Key, // Display name
                             Symbol = pair.Key, // Use full name as symbol for consistency with how it's passed to FindIndexSecurityId
-                            ScripId = securityId,
-                            Segment = "I" // Segment for spot indices
+                            ScripId = indexScripInfo.SecurityId,
+                            Segment = indexScripInfo.Segment, // Segment for spot indices (IDX_I in Dhan API)
+                            ExchId = indexScripInfo.ExchId // CRITICAL FIX: Populate ExchId
                         });
                     });
                 }
@@ -363,7 +377,9 @@ namespace TradingConsole.Wpf.ViewModels
             await LoadOrdersAsync();
 
             // Start the option chain refresh timer after initial data load
-            _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            // CRITICAL FIX: Changed from TimeSpan.FromSeconds(5) to TimeSpan.FromSeconds(10) for refresh interval
+            // to reduce API calls and mitigate "TooManyRequests" errors.
+            _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
 
 
             var initialIndex = Indices.FirstOrDefault();
@@ -392,7 +408,8 @@ namespace TradingConsole.Wpf.ViewModels
                 new() { Symbol = "HDFCBANK-FUT", IsFuture = true, UnderlyingSymbol = "HDFCBANK", FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "ICICIBANK", FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "ICICIBANK-FUT", IsFuture = true, UnderlyingSymbol = "ICICIBANK", FeedType = "Quote", SegmentId = 2 },
-                new() { Symbol = "RELIANCE", FeedType = "Quote", SegmentId = 1 },
+                // CRITICAL FIX: Changed "RELIANCE" to "RELIANCE INDUSTRIES" for equity search
+                new() { Symbol = "RELIANCE INDUSTRIES", FeedType = "Quote", SegmentId = 1 },
                 new() { Symbol = "RELIANCE-FUT", IsFuture = true, UnderlyingSymbol = "RELIANCE", FeedType = "Quote", SegmentId = 2 },
                 new() { Symbol = "INFOSYS", FeedType = "Quote", SegmentId = 1 }, // Changed from "INFY" to "INFOSYS"
                 new() { Symbol = "INFY-FUT", IsFuture = true, UnderlyingSymbol = "INFY", FeedType = "Quote", SegmentId = 2 }
@@ -426,7 +443,10 @@ namespace TradingConsole.Wpf.ViewModels
             foreach (var indexInfo in Indices)
             {
                 await AddIndexOptionsToDashboardAsync(indexInfo);
-                await Task.Delay(1500); // Small delay to avoid overwhelming API/WebSocket
+                // CRITICAL FIX: Increased delay between adding options for each index
+                // to give the API more time to reset rate limits.
+                // This delay accounts for the two API calls (expiry list + option chain) for each index.
+                await Task.Delay(2 * DhanApiClient.ApiCallDelayMs + 100); // 2 API calls + small buffer
             }
         }
 
@@ -468,31 +488,21 @@ namespace TradingConsole.Wpf.ViewModels
         {
             try
             {
-                string apiSecurityId = string.Empty;
-                string apiSegment = string.Empty;
+                // CRITICAL FIX: Use the spot index's SecurityId and Segment for option chain API calls
+                string apiSecurityId = indexInfo.ScripId;
+                string apiSegment = MapSegmentForOptionChainApi(indexInfo.Segment); // Ensure correct API segment for indices
+
                 ExpiryListResponse? expiryListResponse = null;
 
-                // --- CRITICAL FIX: Find the near-month future ScripInfo for the selected index ---
-                // This is the primary way to get expiry lists and option chains for indices.
-                ScripInfo? futureScrip = _scripMasterService.FindNearMonthFutureSecurityId(indexInfo.Symbol); // IndexInfo.Symbol is "Nifty 50", "Nifty Bank", "Sensex"
-
-                if (futureScrip == null || string.IsNullOrEmpty(futureScrip.SecurityId))
-                {
-                    await UpdateStatusAsync($"Could not find near-month future for {indexInfo.Name}. Cannot load options.");
-                    Debug.WriteLine($"[OptionChain] Failed to find future ScripInfo for {indexInfo.Name} ({indexInfo.Symbol}). Aborting option dashboard load.");
-                    return;
-                }
-
-                apiSecurityId = futureScrip.SecurityId;
-                apiSegment = futureScrip.Segment; // Use the segment from the found future (e.g., "NSE_FNO" or "BSE_FNO")
-
-                Debug.WriteLine($"[OptionChain] Fetching expiry dates for {indexInfo.Name} using FUTURE SecurityId: {apiSecurityId} and Segment: {apiSegment}");
+                Debug.WriteLine($"[OptionChain] Fetching expiry dates for {indexInfo.Name} using SPOT INDEX SecurityId: {apiSecurityId} and Segment: {apiSegment}");
                 expiryListResponse = await _apiClient.GetExpiryListAsync(apiSecurityId, apiSegment);
 
                 if (expiryListResponse?.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
                 {
-                    await UpdateStatusAsync($"Could not get expiry dates for {indexInfo.Name} using future contract.");
-                    Debug.WriteLine($"[OptionChain] No expiry dates found for {indexInfo.Name} (Future ID: {apiSecurityId}). Aborting option chain load.");
+                    await UpdateStatusAsync($"Could not get expiry dates for {indexInfo.Name}. Aborting option chain load.");
+                    Debug.WriteLine($"[OptionChain] No expiry dates found for {indexInfo.Name} (Spot ID: {apiSecurityId}). Aborting option chain load.");
+                    App.Current.Dispatcher.Invoke(ExpiryDates.Clear);
+                    App.Current.Dispatcher.Invoke(OptionChainRows.Clear);
                     return;
                 }
 
@@ -503,8 +513,7 @@ namespace TradingConsole.Wpf.ViewModels
                     return;
                 }
 
-                await Task.Delay(1100); // Respect API rate limits
-
+                // Removed Task.Delay(1100) here, as it's now handled by DhanApiClient's semaphore.
                 Debug.WriteLine($"[AddIndexOptions] Fetching option chain for {indexInfo.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {nearestExpiry}).");
                 await UpdateStatusAsync($"Fetching option chain for {indexInfo.Name}...");
 
@@ -536,6 +545,22 @@ namespace TradingConsole.Wpf.ViewModels
                 int startIndex = Math.Max(0, atmIndex - 4);
                 int endIndex = Math.Min(allStrikes.Count - 1, atmIndex + 4);
 
+                // Determine the correct F&O segment ID for options based on the index's exchange
+                int optionSegmentIdForDashboard;
+                if (indexInfo.ExchId == "NSE") // Nifty 50 and Nifty Bank are NSE indices
+                {
+                    optionSegmentIdForDashboard = GetSegmentIdFromName("NSE_FNO");
+                }
+                else if (indexInfo.ExchId == "BSE") // Sensex is a BSE index
+                {
+                    optionSegmentIdForDashboard = GetSegmentIdFromName("BSE_FNO");
+                }
+                else
+                {
+                    optionSegmentIdForDashboard = GetSegmentIdFromName("NSE_FNO"); // Default to NSE_FNO if exchange is unknown
+                }
+
+
                 for (int i = startIndex; i <= endIndex; i++)
                 {
                     var strikeInfo = allStrikes[i]!;
@@ -554,15 +579,26 @@ namespace TradingConsole.Wpf.ViewModels
                                     Symbol = $"{indexInfo.Symbol} {formattedStrike} CE",
                                     SecurityId = strikeInfo.Data.CallOption.SecurityId,
                                     FeedType = "Quote",
-                                    SegmentId = GetSegmentIdFromName(futureScrip.Segment), // Use segment from future
+                                    SegmentId = optionSegmentIdForDashboard, // Use the determined F&O segment ID
                                     UnderlyingSymbol = indexInfo.Symbol
                                 });
                             }
                             else
                             {
-                                Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Call Option (SecurityId: {strikeInfo.Data.CallOption.SecurityId}) for dashboard: {indexInfo.Symbol} {formattedStrike} CE");
+                                // Log if SecurityId is empty, which is the core issue
+                                if (string.IsNullOrEmpty(strikeInfo.Data.CallOption.SecurityId))
+                                {
+                                    Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Call Option (SecurityId: EMPTY) for dashboard: {indexInfo.Symbol} {formattedStrike} CE. Check API response mapping.");
+                                }
+                                else
+                                {
+                                    Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Call Option (SecurityId: {strikeInfo.Data.CallOption.SecurityId}) for dashboard: {indexInfo.Symbol} {formattedStrike} CE");
+                                }
                             }
                         });
+                        // Add a small delay between adding each option to the dashboard to prevent rapid UI updates
+                        // and potentially reduce API call bursts if this triggers other chained events.
+                        await Task.Delay(50);
                     }
 
                     if (strikeInfo.Data.PutOption != null)
@@ -576,15 +612,25 @@ namespace TradingConsole.Wpf.ViewModels
                                     Symbol = $"{indexInfo.Symbol} {formattedStrike} PE",
                                     SecurityId = strikeInfo.Data.PutOption.SecurityId,
                                     FeedType = "Quote",
-                                    SegmentId = GetSegmentIdFromName(futureScrip.Segment), // Use segment from future
+                                    SegmentId = optionSegmentIdForDashboard, // Use the determined F&O segment ID
                                     UnderlyingSymbol = indexInfo.Symbol
                                 });
                             }
                             else
                             {
-                                Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Put Option (SecurityId: {strikeInfo.Data.PutOption.SecurityId}) for dashboard: {indexInfo.Symbol} {formattedStrike} PE");
+                                // Log if SecurityId is empty, which is the core issue
+                                if (string.IsNullOrEmpty(strikeInfo.Data.PutOption.SecurityId))
+                                {
+                                    Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Put Option (SecurityId: EMPTY) for dashboard: {indexInfo.Symbol} {formattedStrike} PE. Check API response mapping.");
+                                }
+                                else
+                                {
+                                    Debug.WriteLine($"[AddIndexOptions] Skipping duplicate Put Option (SecurityId: {strikeInfo.Data.PutOption.SecurityId}) for dashboard: {indexInfo.Symbol} {formattedStrike} PE");
+                                }
                             }
                         });
+                        // Add a small delay between adding each option to the dashboard
+                        await Task.Delay(50);
                     }
                 }
                 await UpdateStatusAsync($"Successfully added options for {indexInfo.Name} to dashboard.");
@@ -635,7 +681,18 @@ namespace TradingConsole.Wpf.ViewModels
                 "BSE_EQ" => 3, // Assuming BSE_EQ exists and has an ID
                 "BSE_FNO" => 8, // As per user's hint for Sensex options
                 "IDX_I" => 0,
+                "I" => 0, // Map internal "I" for Index to WebSocket's 0
                 _ => -1 // Unknown segment
+            };
+        }
+
+        // Helper to map segment name for Option Chain API calls (which expects "IDX_I" for indices)
+        private string MapSegmentForOptionChainApi(string segmentName)
+        {
+            return segmentName switch
+            {
+                "I" => "IDX_I", // Map internal "I" for Index to API's "IDX_I"
+                _ => segmentName // For other segments, use as is (e.g., NSE_FNO, BSE_FNO)
             };
         }
 
@@ -728,7 +785,7 @@ namespace TradingConsole.Wpf.ViewModels
                     var selectedIds = new HashSet<string>(OpenPositions.Where(p => p.IsSelected).Select(p => p.SecurityId));
                     OpenPositions.Clear();
                     ClosedPositions.Clear();
-                    if (positionsFromApi != null) { foreach (var posData in positionsFromApi) { var uiPosition = new Position { IsSelected = selectedIds.Contains(posData.SecurityId), SecurityId = posData.SecurityId, Ticker = posData.TradingSymbol, Quantity = posData.NetQuantity, AveragePrice = posData.BuyAverage, LastTradedPrice = posData.LastTradedPrice, RealizedPnl = posData.RealizedProfit, ProductType = posData.ProductType, SellAverage = posData.SellAverage, BuyQuantity = posData.BuyQuantity, SellQuantity = posData.SellQuantity }; if (uiPosition.Quantity != 0) OpenPositions.Add(uiPosition); else ClosedPositions.Add(uiPosition); } }
+                    if (positionsFromApi != null) { foreach (var posData in positions.Where(p => p.NetQuantity != 0)) { var uiPosition = new Position { IsSelected = selectedIds.Contains(posData.SecurityId), SecurityId = posData.SecurityId, Ticker = posData.TradingSymbol, Quantity = posData.NetQuantity, AveragePrice = posData.BuyAverage, LastTradedPrice = posData.LastTradedPrice, RealizedPnl = posData.RealizedProfit, ProductType = posData.ProductType, SellAverage = posData.SellAverage, BuyQuantity = posData.BuyQuantity, SellQuantity = posData.SellQuantity }; OpenPositions.Add(uiPosition); } foreach (var posData in positions.Where(p => p.NetQuantity == 0)) { var uiPosition = new Position { IsSelected = selectedIds.Contains(posData.SecurityId), SecurityId = posData.SecurityId, Ticker = posData.TradingSymbol, Quantity = posData.NetQuantity, AveragePrice = posData.BuyAverage, LastTradedPrice = posData.LastTradedPrice, RealizedPnl = posData.RealizedProfit, ProductType = posData.ProductType, SellAverage = posData.SellAverage, BuyQuantity = posData.BuyQuantity, SellQuantity = posData.SellQuantity }; ClosedPositions.Add(uiPosition); } }
                     if (fundLimitFromApi != null) { FundDetails.AvailableBalance = fundLimitFromApi.AvailableBalance; FundDetails.UtilizedMargin = fundLimitFromApi.UtilizedAmount; FundDetails.Collateral = fundLimitFromApi.CollateralAmount; FundDetails.WithdrawableBalance = fundLimitFromApi.WithdrawableBalance; }
                     OnPropertyChanged(nameof(BookedPnl));
                     OnPropertyChanged(nameof(OpenPnl));
@@ -738,11 +795,14 @@ namespace TradingConsole.Wpf.ViewModels
             }
             catch (DhanApiException ex)
             {
-                await UpdateStatusAsync(ex.Message);
+                // Log the exception details for debugging
+                Debug.WriteLine($"[LoadPortfolioAsync] Dhan API Exception: {ex.Message}");
+                await UpdateStatusAsync($"API Error: {ex.Message}");
             }
             catch (Exception ex)
             {
                 await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                Debug.WriteLine($"[LoadPortfolioAsync] Unexpected Error: {ex.Message}");
             }
         }
 
@@ -757,11 +817,14 @@ namespace TradingConsole.Wpf.ViewModels
             }
             catch (DhanApiException ex)
             {
-                await UpdateStatusAsync(ex.Message);
+                // Log the exception details for debugging
+                Debug.WriteLine($"[LoadOrdersAsync] Dhan API Exception: {ex.Message}");
+                await UpdateStatusAsync($"API Error: {ex.Message}");
             }
             catch (Exception ex)
             {
                 await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                Debug.WriteLine($"[LoadOrdersAsync] Unexpected Error: {ex.Message}");
             }
         }
 
@@ -771,70 +834,61 @@ namespace TradingConsole.Wpf.ViewModels
 
             try
             {
-                _isDataLoading = true;
+                _isDataLoading = true; // Set flag to prevent redundant calls from SelectedExpiry setter
 
-                string apiSecurityId = string.Empty;
-                string apiSegment = string.Empty;
+                // CRITICAL FIX: Use the spot index's SecurityId and Segment for option chain API calls
+                string apiSecurityId = SelectedIndex.ScripId;
+                string apiSegment = MapSegmentForOptionChainApi(SelectedIndex.Segment); // Map to API's expected segment for indices
+
                 ExpiryListResponse? expiryListResponse = null;
 
-                // --- CRITICAL FIX: Find the near-month future ScripInfo for the selected index ---
-                // This is the primary way to get expiry lists and option chains for indices.
-                ScripInfo? futureScrip = _scripMasterService.FindNearMonthFutureSecurityId(SelectedIndex.Symbol); // Use SelectedIndex.Symbol
+                Debug.WriteLine($"[OptionChain] Fetching expiry dates for {SelectedIndex.Name} using SPOT INDEX SecurityId: {apiSecurityId} and Segment: {apiSegment}");
+                expiryListResponse = await _apiClient.GetExpiryListAsync(apiSecurityId, apiSegment);
 
-                if (futureScrip == null || string.IsNullOrEmpty(futureScrip.SecurityId))
+                if (expiryListResponse?.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
                 {
-                    await UpdateStatusAsync($"Could not find near-month future for {SelectedIndex.Name}. Cannot load options."); // Use SelectedIndex.Name
-                    Debug.WriteLine($"[OptionChain] Failed to find future ScripInfo for {SelectedIndex.Name} ({SelectedIndex.Symbol}). Aborting option chain load."); // Use SelectedIndex.Name and SelectedIndex.Symbol
+                    await UpdateStatusAsync($"Could not get expiry dates for {SelectedIndex.Name}. Aborting option chain load.");
+                    Debug.WriteLine($"[OptionChain] No expiry dates found for {SelectedIndex.Name} (Spot ID: {apiSecurityId}). Aborting option chain load.");
                     App.Current.Dispatcher.Invoke(ExpiryDates.Clear);
                     App.Current.Dispatcher.Invoke(OptionChainRows.Clear);
                     return;
                 }
 
-                apiSecurityId = futureScrip.SecurityId;
-                apiSegment = futureScrip.Segment; // Use the segment from the found future (e.g., "NSE_FNO" or "BSE_FNO")
-
-                // Store these for subsequent refreshes
-                _lastApiSecurityIdUsed = apiSecurityId;
-                _lastApiSegmentUsed = apiSegment;
-
-                Debug.WriteLine($"[OptionChain] Fetching expiry dates for {SelectedIndex.Name} using FUTURE SecurityId: {apiSecurityId} and Segment: {apiSegment}"); // Use SelectedIndex.Name
-                expiryListResponse = await _apiClient.GetExpiryListAsync(apiSecurityId, apiSegment);
-
-                if (expiryListResponse?.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
-                {
-                    await UpdateStatusAsync($"Could not get expiry dates for {SelectedIndex.Name} using future contract."); // Use SelectedIndex.Name
-                    Debug.WriteLine($"[OptionChain] No expiry dates found for {SelectedIndex.Name} (Future ID: {apiSecurityId}). Aborting option chain load."); // Use SelectedIndex.Name
-                    return;
-                }
-
-                App.Current.Dispatcher.Invoke(() =>
+                await App.Current.Dispatcher.InvokeAsync(() =>
                 {
                     ExpiryDates.Clear();
                     foreach (var expiry in expiryListResponse.ExpiryDates.OrderBy(d => DateTime.ParseExact(d, "yyyy-MM-dd", CultureInfo.InvariantCulture)))
                     {
                         ExpiryDates.Add(expiry);
                     }
-                    SelectedExpiry = ExpiryDates.FirstOrDefault(); // Automatically select the nearest expiry
+                    // Temporarily set _selectedExpiry directly to avoid triggering the setter's Task.Run
+                    _selectedExpiry = ExpiryDates.FirstOrDefault();
+                    OnPropertyChanged(nameof(SelectedExpiry)); // Manually notify property changed
                 });
 
-                // Now load the option chain for the selected expiry
-                if (!string.IsNullOrEmpty(SelectedExpiry))
+                // Store these for subsequent refreshes
+                _lastApiSecurityIdUsed = apiSecurityId;
+                _lastApiSegmentUsed = apiSegment;
+
+                // Now explicitly call LoadOptionChainOnlyAsync once
+                if (!string.IsNullOrEmpty(_selectedExpiry))
                 {
                     await LoadOptionChainOnlyAsync(apiSecurityId, apiSegment);
                 }
             }
             catch (DhanApiException ex)
             {
-                await UpdateStatusAsync(ex.Message);
+                Debug.WriteLine($"[OptionChain] Dhan API Exception: {ex.Message}");
+                await UpdateStatusAsync($"API Error: {ex.Message}");
             }
             catch (Exception ex)
             {
                 await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
-                Debug.WriteLine($"[OptionChain] Error in LoadExpiryAndOptionChainAsync: {ex}");
+                Debug.WriteLine($"[OptionChain] Unexpected Error: {ex.Message}");
             }
             finally
             {
-                _isDataLoading = false;
+                _isDataLoading = false; // Reset flag
             }
         }
 
@@ -844,8 +898,8 @@ namespace TradingConsole.Wpf.ViewModels
 
             try
             {
-                await UpdateStatusAsync($"Fetching option chain for {SelectedIndex.Name} - {SelectedExpiry}..."); // Use SelectedIndex.Name
-                Debug.WriteLine($"[OptionChain] Fetching option chain for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry})."); // Use SelectedIndex.Name
+                await UpdateStatusAsync($"Fetching option chain for {SelectedIndex.Name} - {SelectedExpiry}...");
+                Debug.WriteLine($"[OptionChain] Fetching option chain for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry}).");
 
                 var optionChainResponse = await _apiClient.GetOptionChainAsync(apiSecurityId, apiSegment, SelectedExpiry);
 
@@ -908,22 +962,23 @@ namespace TradingConsole.Wpf.ViewModels
                         }
                         CalculateOptionChainAggregates();
                     });
-                    await UpdateStatusAsync($"Option chain for {SelectedIndex.Name} - {SelectedExpiry} loaded."); // Use SelectedIndex.Name
+                    await UpdateStatusAsync($"Option chain for {SelectedIndex.Name} - {SelectedExpiry} loaded.");
                 }
                 else
                 {
-                    await UpdateStatusAsync($"Failed to load option chain for {SelectedIndex.Name} - {SelectedExpiry}. Data is null."); // Use SelectedIndex.Name
-                    Debug.WriteLine($"[OptionChain] Option chain data is null for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry})"); // Use SelectedIndex.Name
+                    await UpdateStatusAsync($"Failed to load option chain for {SelectedIndex.Name} - {SelectedExpiry}. Data is null.");
+                    Debug.WriteLine($"[OptionChain] Option chain data is null for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry})");
                 }
             }
             catch (DhanApiException ex)
             {
-                await UpdateStatusAsync(ex.Message);
+                Debug.WriteLine($"[OptionChain] Dhan API Exception: {ex.Message}");
+                await UpdateStatusAsync($"API Error: {ex.Message}");
             }
             catch (Exception ex)
             {
                 await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
-                Debug.WriteLine($"[OptionChain] Error in LoadOptionChainOnlyAsync: {ex}");
+                Debug.WriteLine($"[OptionChain] Unexpected Error: {ex.Message}");
             }
         }
 
@@ -934,15 +989,9 @@ namespace TradingConsole.Wpf.ViewModels
 
             try
             {
-                // Use the last successfully determined API parameters for refresh
-                string apiSecurityId = _lastApiSecurityIdUsed;
-                string apiSegment = _lastApiSegmentUsed;
-
-                if (string.IsNullOrEmpty(apiSecurityId) || string.IsNullOrEmpty(apiSegment))
-                {
-                    Debug.WriteLine($"[OptionChainRefresh] API parameters not set. Skipping refresh for {SelectedIndex.Name}.");
-                    return;
-                }
+                // CRITICAL FIX: Use properties of the currently SelectedIndex for refresh
+                string apiSecurityId = SelectedIndex.ScripId;
+                string apiSegment = MapSegmentForOptionChainApi(SelectedIndex.Segment);
 
                 Debug.WriteLine($"[OptionChainRefresh] Refreshing option chain for {SelectedIndex.Name} (API SecId: {apiSecurityId}, Segment: {apiSegment}, Expiry: {SelectedExpiry}).");
 
@@ -1079,7 +1128,8 @@ namespace TradingConsole.Wpf.ViewModels
             var now = DateTime.Now;
             var marketOpen = DateTime.Today.Add(new TimeSpan(9, 15, 0));
             var marketClose = DateTime.Today.Add(new TimeSpan(15, 30, 0));
-            var refreshInterval = TimeSpan.FromSeconds(5);
+            // CRITICAL FIX: Increased refresh interval to 10 seconds to reduce API calls
+            var refreshInterval = TimeSpan.FromSeconds(10);
 
             if (now >= marketOpen && now < marketClose)
             {

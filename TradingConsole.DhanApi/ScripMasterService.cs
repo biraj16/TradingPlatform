@@ -92,13 +92,16 @@ namespace TradingConsole.DhanApi
 
                         // Get instrument type from the "INSTRUMENT" column (5th column)
                         var instrumentType = GetSafeValue(values, headerMap, Col_Instrument);
+                        var exchId = GetSafeValue(values, headerMap, Col_ExchId);
+                        var segment = GetSafeValue(values, headerMap, Col_Segment);
+
 
                         if (allowedTypes.Contains(instrumentType))
                         {
                             var scrip = new ScripInfo
                             {
-                                ExchId = GetSafeValue(values, headerMap, Col_ExchId), // Populate ExchId
-                                Segment = GetSafeValue(values, headerMap, Col_Segment),
+                                ExchId = exchId, // Populate ExchId
+                                Segment = MapCsvSegmentToApiSegment(exchId, segment, instrumentType), // Map to API-compatible segment
                                 SecurityId = GetSafeValue(values, headerMap, Col_SecurityId),
                                 InstrumentType = instrumentType, // Populated from "INSTRUMENT" column
                                 SemInstrumentName = GetSafeValue(values, headerMap, Col_CustomSymbol), // DISPLAY_NAME (9th col)
@@ -132,6 +135,29 @@ namespace TradingConsole.DhanApi
                 Debug.WriteLine(ex.StackTrace);
             }
         }
+
+        // Helper to map CSV segment to API-compatible segment
+        private string MapCsvSegmentToApiSegment(string exchId, string csvSegment, string instrumentType)
+        {
+            // For Equity, use NSE_EQ or BSE_EQ based on ExchId
+            if (instrumentType == "EQUITY")
+            {
+                return exchId.ToUpperInvariant() == "NSE" ? "NSE_EQ" : "BSE_EQ";
+            }
+            // For Futures and Options, use NSE_FNO or BSE_FNO based on ExchId
+            else if (instrumentType == "FUTIDX" || instrumentType == "FUTSTK" || instrumentType == "OPTIDX" || instrumentType == "OPTSTK")
+            {
+                return exchId.ToUpperInvariant() == "NSE" ? "NSE_FNO" : "BSE_FNO";
+            }
+            // For spot indices, use IDX_I (as per Dhan API docs, even if CSV says something else)
+            else if (instrumentType == "INDEX")
+            {
+                return "IDX_I";
+            }
+            // Default or unknown segments
+            return csvSegment; // Fallback to original CSV segment if no specific mapping
+        }
+
 
         private DateTime? FormatDate(string dateStr)
         {
@@ -204,46 +230,47 @@ namespace TradingConsole.DhanApi
             return null;
         }
 
+        public ScripInfo? FindIndexScripInfo(string indexName)
+        {
+            var term = RemoveWhitespace(indexName).ToUpperInvariant();
+            Debug.WriteLine($"[ScripMaster_FindIndexScripInfo] Searching for SPOT INDEX: '{indexName}' (normalized: '{term}') (exact match on DISPLAY_NAME)");
+
+            var result = _scripMaster.FirstOrDefault(s => s.InstrumentType == "INDEX" &&
+                                                         RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Equals(term));
+
+            if (result == null) Debug.WriteLine($"[ScripMaster_FindIndexScripInfo] FAIL - No spot index found for: '{indexName}'");
+            else Debug.WriteLine($"[ScripMaster_FindIndexScripInfo] SUCCESS - Found spot index: '{result.SemInstrumentName}' | ID: {result.SecurityId}, ExchId: {result.ExchId}");
+
+            return result;
+        }
+
         public string? FindIndexSecurityId(string indexName)
         {
-            var term = RemoveWhitespace(indexName).ToUpperInvariant(); // Remove whitespace from search term
-            Debug.WriteLine($"[ScripMaster_FindIndex] Searching for SPOT INDEX: '{indexName}' (normalized: '{term}') (exact match on DISPLAY_NAME)");
-            // As per user: "in the 5th column we select INDEX. in the 9th column we should search for exact match "Nifty 50", "Nifty Bank", "Sensex"."
-            // No EXCH_ID filter here as per instruction
-            var result = _scripMaster.FirstOrDefault(s => s.InstrumentType == "INDEX" && // Filter by INSTRUMENT (5th column)
-                                                         RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Equals(term)); // Exact match on DISPLAY_NAME (9th column), after removing whitespace
-
-            if (result == null) Debug.WriteLine($"[ScripMaster_FindIndex] FAIL - No spot index found for: '{indexName}'");
-            else Debug.WriteLine($"[ScripMaster_FindIndex] SUCCESS - Found spot index: '{result.SemInstrumentName}' | ID: {result.SecurityId}");
-
-            return result?.SecurityId;
+            return FindIndexScripInfo(indexName)?.SecurityId;
         }
+
 
         /// <summary>
         /// Finds a derivative (Future or Stock Future) ScripInfo based on its underlying symbol.
         /// Prioritizes near-month expiry.
         /// </summary>
-        /// <param name="underlyingSymbol">The underlying symbol (e.g., "NIFTY", "RELIANCE").</param>
+        /// <param name="underlyingSymbol">The underlying symbol (e.g., "NIFTY", "RELIANCE", "Nifty 50", "Nifty Bank").</param>
         /// <returns>The ScripInfo of the nearest month future, or null if not found.</returns>
-        public ScripInfo? FindNearMonthFutureSecurityId(string underlyingSymbol) // Changed return type to ScripInfo?
+        public ScripInfo? FindNearMonthFutureSecurityId(string underlyingSymbol)
         {
-            var term = RemoveWhitespace(underlyingSymbol).ToUpperInvariant(); // Remove whitespace from search term
-            Debug.WriteLine($"[ScripMaster_FindFuture] Searching for NEAR MONTH FUTURE for underlying: '{underlyingSymbol}' (normalized: '{term}')");
+            var normalizedUnderlyingSymbol = RemoveWhitespace(underlyingSymbol).ToUpperInvariant();
+            Debug.WriteLine($"[ScripMaster_FindFuture] Searching for NEAR MONTH FUTURE for underlying: '{underlyingSymbol}' (normalized: '{normalizedUnderlyingSymbol}')");
 
-            // Filter for Futures (Index or Stock) and active expiry dates
             var futures = _scripMaster
-                .Where(s => (s.InstrumentType == "FUTIDX" || s.InstrumentType == "FUTSTK") && // Filter by INSTRUMENT (5th column)
+                .Where(s => (s.InstrumentType == "FUTIDX" || s.InstrumentType == "FUTSTK") &&
                             s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date >= DateTime.Today)
                 .ToList();
 
-            // --- Stock Futures (FUTSTK) - Use EXCH_ID filter ---
-            // As per user: "NSE 1st column, 5th column FUTSTK then name of the underlying in 9th column"
-            var stockFutures = futures
-                .Where(s => s.ExchId.ToUpperInvariant().Equals("NSE") && s.InstrumentType == "FUTSTK")
-                .ToList();
-
-            var matchingStockFutures = stockFutures
-                .Where(s => RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains(term)) // Contains match on DISPLAY_NAME (9th column), after removing whitespace
+            // --- Stock Futures (FUTSTK) ---
+            // Prioritize exact match on UnderlyingSymbol for stock futures
+            var matchingStockFutures = futures
+                .Where(s => s.ExchId.ToUpperInvariant().Equals("NSE") && s.InstrumentType == "FUTSTK" &&
+                            s.UnderlyingSymbol.ToUpperInvariant().Equals(normalizedUnderlyingSymbol))
                 .OrderBy(s => s.ExpiryDate)
                 .ToList();
 
@@ -251,72 +278,83 @@ namespace TradingConsole.DhanApi
             {
                 var result = matchingStockFutures.FirstOrDefault();
                 Debug.WriteLine($"[ScripMaster_FindFuture] SUCCESS - Found stock future: '{result?.SemInstrumentName}' | ID: {result?.SecurityId}");
-                return result; // Return ScripInfo
+                return result;
             }
 
-            // --- Index Futures (FUTIDX) - DO NOT use EXCH_ID filter ---
-            // As per user: "for index futures, NSE 1st column, 5th column FUTIDX then name of the underlying in 9th column"
-            // Correction: "for index futures, ... we dont need to use EXCH_ID filter else sensex will fail."
-            var indexFutures = futures
-                .Where(s => s.InstrumentType == "FUTIDX") // Filter by INSTRUMENT (5th column), no EXCH_ID filter
-                .ToList();
-
-            // --- Refined search for Index Futures to avoid NIFTY/BANKNIFTY confusion and handle SENSEX format ---
-            var matchingIndexFutures = new List<ScripInfo>();
-
-            if (term == "NIFTY")
+            // --- Index Futures (FUTIDX) ---
+            // Specific logic for Nifty and Bank Nifty as per user's instructions
+            if (normalizedUnderlyingSymbol == "NIFTY50") // Input from MainViewModel for Nifty 50
             {
-                // NIFTY: Should contain "NIFTY" but NOT "BANKNIFTY". Also, ensure it doesn't contain digits (e.g. "NIFTY 2025 JUL FUT")
-                matchingIndexFutures = indexFutures
-                    .Where(s => RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("NIFTY") &&
-                                !RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("BANKNIFTY") && // Exclude Banknifty
-                                !ContainsDigit(RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant())) // Exclude if it contains any digit
+                // Search for NIFTY futures, explicitly excluding BANKNIFTY and FINNIFTY, and ensuring no day numbers
+                var niftyFutures = futures
+                    .Where(s => s.InstrumentType == "FUTIDX" &&
+                                RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("NIFTY") &&
+                                !RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("BANKNIFTY") &&
+                                !RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("FINNIFTY") && // Exclude FINNIFTY
+                                                                                                                  // Ensure no digits are present between 'NIFTY' and 'FUT' (e.g., "NIFTY 08 JUL FUT")
+                                !Regex.IsMatch(RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant(), @"NIFTY\s*\d+\s*[A-Z]{3}\s*FUT"))
                     .OrderBy(s => s.ExpiryDate)
                     .ToList();
+                if (niftyFutures.Any())
+                {
+                    var result = niftyFutures.FirstOrDefault();
+                    Debug.WriteLine($"[ScripMaster_FindFuture] SUCCESS - Found Nifty future: '{result?.SemInstrumentName}' | ID: {result?.SecurityId}");
+                    return result;
+                }
             }
-            else if (term == "BANKNIFTY")
+            else if (normalizedUnderlyingSymbol == "NIFTYBANK") // Input from MainViewModel for Nifty Bank
             {
-                // BANKNIFTY: Should contain "BANKNIFTY". Also, ensure it doesn't contain digits.
-                matchingIndexFutures = indexFutures
-                    .Where(s => RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("BANKNIFTY") &&
-                                !ContainsDigit(RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant())) // Exclude if it contains any digit
+                // Search for BANKNIFTY futures
+                var bankNiftyFutures = futures
+                    .Where(s => s.InstrumentType == "FUTIDX" &&
+                                RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("BANKNIFTY"))
                     .OrderBy(s => s.ExpiryDate)
                     .ToList();
+                if (bankNiftyFutures.Any())
+                {
+                    var result = bankNiftyFutures.FirstOrDefault();
+                    Debug.WriteLine($"[ScripMaster_FindFuture] SUCCESS - Found BankNifty future: '{result?.SemInstrumentName}' | ID: {result?.SecurityId}");
+                    return result;
+                }
             }
-            else if (term == "SENSEX")
+            else if (normalizedUnderlyingSymbol == "SENSEX")
             {
-                // SENSEX: Should contain "SENSEX" and match the "SENSEX JUL FUT" pattern (no day number).
-                // This means the DISPLAY_NAME should contain "SENSEX" and "FUT" but NOT have a number between them.
-                // A more robust check for "SENSEX JUL FUT" pattern:
-                matchingIndexFutures = indexFutures
-                    .Where(s => RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("SENSEX") &&
+                // Sensex logic: Should contain "SENSEX" and "FUT" but NOT have a number between them.
+                var sensexFutures = futures
+                    .Where(s => s.InstrumentType == "FUTIDX" &&
+                                RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("SENSEX") &&
                                 RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains("FUT") &&
-                                !ContainsDigit(RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Replace("SENSEX", "").Replace("FUT", ""))) // Check for digits excluding SENSEX and FUT
+                                // Regex to ensure no digits between SENSEX and FUT
+                                !Regex.IsMatch(RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant(), @"SENSEX\s*\d+\s*[A-Z]{3}\s*FUT")) // Exclude "SENSEX 08 JUL FUT"
                     .OrderBy(s => s.ExpiryDate)
                     .ToList();
+                if (sensexFutures.Any())
+                {
+                    var result = sensexFutures.FirstOrDefault();
+                    Debug.WriteLine($"[ScripMaster_FindFuture] SUCCESS - Found Sensex future: '{result?.SemInstrumentName}' | ID: {result?.SecurityId}");
+                    return result;
+                }
             }
             else
             {
-                // Generic fallback for other index futures if any
-                matchingIndexFutures = indexFutures
-                    .Where(s => RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Contains(term))
+                // Generic fallback for other index futures if any (e.g., if a new index is added)
+                var genericIndexFutures = futures
+                    .Where(s => s.InstrumentType == "FUTIDX" &&
+                                s.UnderlyingSymbol.ToUpperInvariant().Equals(normalizedUnderlyingSymbol))
                     .OrderBy(s => s.ExpiryDate)
                     .ToList();
+                if (genericIndexFutures.Any())
+                {
+                    var result = genericIndexFutures.FirstOrDefault();
+                    Debug.WriteLine($"[ScripMaster_FindFuture] SUCCESS - Found generic index future: '{result?.SemInstrumentName}' | ID: {result?.SecurityId}");
+                    return result;
+                }
             }
-
-
-            if (matchingIndexFutures.Any())
-            {
-                var result = matchingIndexFutures.FirstOrDefault();
-                Debug.WriteLine($"[ScripMaster_FindFuture] SUCCESS - Found index future: '{result?.SemInstrumentName}' | ID: {result?.SecurityId}");
-                return result; // Return ScripInfo
-            }
-
 
             // --- Debugging: Log details of all relevant futures that were considered but not matched ---
             if (futures.Any())
             {
-                Debug.WriteLine($"[ScripMaster_FindFuture] DEBUG: No future found for '{underlyingSymbol}' (normalized: '{term}') through DISPLAY_NAME contains. Examining first 5 relevant FUTIDX/FUTSTK entries:");
+                Debug.WriteLine($"[ScripMaster_FindFuture] DEBUG: No future found for '{underlyingSymbol}' (normalized: '{normalizedUnderlyingSymbol}') through DISPLAY_NAME contains. Examining first 5 relevant FUTIDX/FUTSTK entries:");
                 // Take from the already filtered 'futures' list for relevant entries
                 var relevantFuturesForDebug = futures.Take(5).ToList();
 
@@ -329,7 +367,7 @@ namespace TradingConsole.DhanApi
                 }
                 else
                 {
-                    Debug.WriteLine($"[ScripMaster_FindFuture] DEBUG: No relevant FUTIDX/FUTSTK entries found for '{underlyingSymbol}' (normalized: '{term}') in the master list after initial filtering.");
+                    Debug.WriteLine($"[ScripMaster_FindFuture] DEBUG: No relevant FUTIDX/FUTSTK entries found for '{underlyingSymbol}' (normalized: '{normalizedUnderlyingSymbol}') in the master list after initial filtering.");
                 }
             }
 
@@ -353,7 +391,7 @@ namespace TradingConsole.DhanApi
             // As per user: "5th column OPTIDX, then in the 5th column we have to look for the required option."
             // Removed segment filter as per user instruction: "FindOptionSecurityId also do not need to use exchange filter, else sensex options wont be found."
             var options = _scripMaster
-                .Where(s => s.InstrumentType == "OPTIDX" && // Filter by INSTRUMENT (5th column)
+                .Where(s => (s.InstrumentType == "OPTIDX" || s.InstrumentType == "OPTSTK") && // Include OPTSTK as well
                             s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date == expiryDate.Date &&
                             s.StrikePrice == strikePrice &&
                             s.OptionType.ToUpperInvariant().Equals(termOptionType))
@@ -365,8 +403,19 @@ namespace TradingConsole.DhanApi
             string expectedExpiryPart = expiryDate.ToString("dd MMM", CultureInfo.InvariantCulture).ToUpperInvariant(); // e.g., "26 MAR"
             // Remove .00 if present for strike price to match common display format
             string formattedStrike = strikePrice.ToString(CultureInfo.InvariantCulture).Replace(".00", "");
+
+            // CRITICAL FIX: Adjust underlying symbol for option search to match common display names
+            string adjustedUnderlyingForOptionSearch = termUnderlying;
+            if (termUnderlying == "NIFTY50")
+            {
+                adjustedUnderlyingForOptionSearch = "NIFTY";
+            }
+            else if (termUnderlying == "NIFTYBANK")
+            {
+                adjustedUnderlyingForOptionSearch = "BANKNIFTY";
+            }
             // Construct the search term, removing whitespace from the underlying symbol part
-            string expectedDisplayNamePart = $"{RemoveWhitespace(underlyingSymbol).ToUpperInvariant()} {expectedExpiryPart} {formattedStrike} {termOptionType}";
+            string expectedDisplayNamePart = $"{adjustedUnderlyingForOptionSearch} {expectedExpiryPart} {formattedStrike} {termOptionType}";
 
             Debug.WriteLine($"[ScripMaster_FindOption] Expected DISPLAY_NAME for search: '{expectedDisplayNamePart}'");
 

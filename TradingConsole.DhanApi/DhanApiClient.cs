@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using TradingConsole.DhanApi.Models;
@@ -13,6 +14,10 @@ namespace TradingConsole.DhanApi
     public class DhanApiClient
     {
         private readonly HttpClient _httpClient;
+        // Introduce a semaphore to control API call rate/concurrency
+        private readonly SemaphoreSlim _apiCallSemaphore = new SemaphoreSlim(1, 1); // Allow 1 concurrent API call
+        // CRITICAL FIX: Changed to public const int so MainViewModel can access it.
+        public const int ApiCallDelayMs = 210; // Delay between API calls to respect rate limits (1000ms / 5 calls = 200ms, plus a small buffer)
 
         private class OptionChainRequestPayload
         {
@@ -57,12 +62,28 @@ namespace TradingConsole.DhanApi
             }
         }
 
+        // Wrapper to apply rate limiting to API calls
+        private async Task<T?> ExecuteApiCall<T>(Func<Task<HttpResponseMessage>> apiCallFunc, string apiName) where T : class
+        {
+            await _apiCallSemaphore.WaitAsync();
+            try
+            {
+                var response = await apiCallFunc();
+                return await HandleResponse<T>(response, apiName);
+            }
+            finally
+            {
+                _apiCallSemaphore.Release();
+                // Add a delay after each API call to respect rate limits
+                await Task.Delay(ApiCallDelayMs);
+            }
+        }
+
         public async Task<List<PositionResponse>?> GetPositionsAsync()
         {
             try
             {
-                HttpResponseMessage response = await _httpClient.GetAsync("/v2/positions");
-                return await HandleResponse<List<PositionResponse>>(response, "GetPositions");
+                return await ExecuteApiCall<List<PositionResponse>>(() => _httpClient.GetAsync("/v2/positions"), "GetPositions");
             }
             catch (Exception e)
             {
@@ -75,8 +96,7 @@ namespace TradingConsole.DhanApi
         {
             try
             {
-                HttpResponseMessage response = await _httpClient.GetAsync("/v2/fundlimit");
-                return await HandleResponse<FundLimitResponse>(response, "GetFundLimit");
+                return await ExecuteApiCall<FundLimitResponse>(() => _httpClient.GetAsync("/v2/fundlimit"), "GetFundLimit");
             }
             catch (Exception e)
             {
@@ -89,15 +109,14 @@ namespace TradingConsole.DhanApi
         {
             try
             {
-                var payload = new OptionChainRequestPayload { UnderlyingScrip = int.Parse(underlyingScripId), UnderlyingSeg = segment };
-                string jsonPayload = JsonConvert.SerializeObject(payload);
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-                // --- DEBUGGING: Log the exact payload being sent ---
-                Debug.WriteLine($"[DhanApiClient_GetExpiryList] Request Payload: {jsonPayload}");
-
-                HttpResponseMessage response = await _httpClient.PostAsync("/v2/optionchain/expirylist", content);
-                return await HandleResponse<ExpiryListResponse>(response, "GetExpiryList");
+                return await ExecuteApiCall<ExpiryListResponse>(async () =>
+                {
+                    var payload = new OptionChainRequestPayload { UnderlyingScrip = int.Parse(underlyingScripId), UnderlyingSeg = segment };
+                    string jsonPayload = JsonConvert.SerializeObject(payload);
+                    var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                    Debug.WriteLine($"[DhanApiClient_GetExpiryList] Request Payload: {jsonPayload}");
+                    return await _httpClient.PostAsync("/v2/optionchain/expirylist", content);
+                }, "GetExpiryList");
             }
             catch (Exception e)
             {
@@ -110,20 +129,19 @@ namespace TradingConsole.DhanApi
         {
             try
             {
-                var payload = new OptionChainRequestPayload
+                return await ExecuteApiCall<OptionChainResponse>(async () =>
                 {
-                    UnderlyingScrip = int.Parse(underlyingScripId),
-                    UnderlyingSeg = segment,
-                    Expiry = expiryDate
-                };
-                string jsonPayload = JsonConvert.SerializeObject(payload);
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-                // --- DEBUGGING: Log the exact payload being sent ---
-                Debug.WriteLine($"[DhanApiClient_GetOptionChain] Request Payload: {jsonPayload}");
-
-                HttpResponseMessage response = await _httpClient.PostAsync("/v2/optionchain", content);
-                return await HandleResponse<OptionChainResponse>(response, "GetOptionChain");
+                    var payload = new OptionChainRequestPayload
+                    {
+                        UnderlyingScrip = int.Parse(underlyingScripId),
+                        UnderlyingSeg = segment,
+                        Expiry = expiryDate
+                    };
+                    string jsonPayload = JsonConvert.SerializeObject(payload);
+                    var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                    Debug.WriteLine($"[DhanApiClient_GetOptionChain] Request Payload: {jsonPayload}");
+                    return await _httpClient.PostAsync("/v2/optionchain", content);
+                }, "GetOptionChain");
             }
             catch (Exception e)
             {
@@ -138,8 +156,7 @@ namespace TradingConsole.DhanApi
 
             try
             {
-                HttpResponseMessage response = await _httpClient.GetAsync($"/v2/marketdata/quote/{securityId}");
-                return await HandleResponse<QuoteResponse>(response, "GetQuote");
+                return await ExecuteApiCall<QuoteResponse>(() => _httpClient.GetAsync($"/v2/marketdata/quote/{securityId}"), "GetQuote");
             }
             catch (Exception e)
             {
@@ -150,44 +167,44 @@ namespace TradingConsole.DhanApi
 
         public async Task<OrderResponse?> PlaceOrderAsync(OrderRequest orderRequest)
         {
-            var requestUrl = "/v2/orders";
-            var jsonPayload = JsonConvert.SerializeObject(orderRequest);
-            var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync(requestUrl, httpContent);
-            return await HandleResponse<OrderResponse>(response, "PlaceOrder");
+            return await ExecuteApiCall<OrderResponse>(async () =>
+            {
+                var requestUrl = "/v2/orders";
+                var jsonPayload = JsonConvert.SerializeObject(orderRequest);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                return await _httpClient.PostAsync(requestUrl, httpContent);
+            }, "PlaceOrder");
         }
 
         public async Task<List<OrderBookEntry>?> GetOrderBookAsync()
         {
-            var requestUrl = "/v2/orders";
-            var response = await _httpClient.GetAsync(requestUrl);
-            return await HandleResponse<List<OrderBookEntry>>(response, "GetOrderBook");
+            return await ExecuteApiCall<List<OrderBookEntry>>(() => _httpClient.GetAsync("/v2/orders"), "GetOrderBook");
         }
 
         public async Task<OrderResponse?> ModifyOrderAsync(ModifyOrderRequest modifyRequest)
         {
-            var requestUrl = $"/v2/orders/{modifyRequest.OrderId}";
-            var jsonPayload = JsonConvert.SerializeObject(modifyRequest);
-            var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            var response = await _httpClient.PutAsync(requestUrl, httpContent);
-            return await HandleResponse<OrderResponse>(response, "ModifyOrder");
+            return await ExecuteApiCall<OrderResponse>(async () =>
+            {
+                var requestUrl = $"/v2/orders/{modifyRequest.OrderId}";
+                var jsonPayload = JsonConvert.SerializeObject(modifyRequest);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                return await _httpClient.PutAsync(requestUrl, httpContent);
+            }, "ModifyOrder");
         }
 
         public async Task<OrderResponse?> CancelOrderAsync(string orderId)
         {
-            var requestUrl = $"/v2/orders/{orderId}";
-            var response = await _httpClient.DeleteAsync(requestUrl);
-            return await HandleResponse<OrderResponse>(response, "CancelOrder");
+            return await ExecuteApiCall<OrderResponse>(() => _httpClient.DeleteAsync($"/v2/orders/{orderId}"), "CancelOrder");
         }
 
         public async Task<bool> ConvertPositionAsync(ConvertPositionRequest request)
         {
-            var requestUrl = "/v2/positions/convert";
-            var jsonPayload = JsonConvert.SerializeObject(request);
-            var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
+            await _apiCallSemaphore.WaitAsync();
             try
             {
+                var requestUrl = "/v2/positions/convert";
+                var jsonPayload = JsonConvert.SerializeObject(request);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                 var response = await _httpClient.PostAsync(requestUrl, httpContent);
                 return response.IsSuccessStatusCode;
             }
@@ -196,31 +213,38 @@ namespace TradingConsole.DhanApi
                 Debug.WriteLine($"FATAL in ConvertPositionAsync: {e.Message}");
                 return false;
             }
+            finally
+            {
+                _apiCallSemaphore.Release();
+                await Task.Delay(ApiCallDelayMs);
+            }
         }
 
         public async Task<OrderResponse?> PlaceSuperOrderAsync(SuperOrderRequest orderRequest)
         {
-            var requestUrl = "/v2/super/orders";
-            var jsonPayload = JsonConvert.SerializeObject(orderRequest);
-            var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync(requestUrl, httpContent);
-            return await HandleResponse<OrderResponse>(response, "PlaceSuperOrder");
+            return await ExecuteApiCall<OrderResponse>(async () =>
+            {
+                var requestUrl = "/v2/super/orders";
+                var jsonPayload = JsonConvert.SerializeObject(orderRequest);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                return await _httpClient.PostAsync(requestUrl, httpContent);
+            }, "PlaceSuperOrder");
         }
 
         public async Task<OrderResponse?> ModifySuperOrderAsync(ModifySuperOrderRequest modifyRequest)
         {
-            var requestUrl = $"/v2/super/orders/{modifyRequest.OrderId}";
-            var jsonPayload = JsonConvert.SerializeObject(modifyRequest);
-            var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            var response = await _httpClient.PutAsync(requestUrl, httpContent);
-            return await HandleResponse<OrderResponse>(response, "ModifySuperOrder");
+            return await ExecuteApiCall<OrderResponse>(async () =>
+            {
+                var requestUrl = $"/v2/super/orders/{modifyRequest.OrderId}";
+                var jsonPayload = JsonConvert.SerializeObject(modifyRequest);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                return await _httpClient.PutAsync(requestUrl, httpContent);
+            }, "ModifySuperOrder");
         }
 
         public async Task<OrderResponse?> CancelSuperOrderAsync(string orderId)
         {
-            var requestUrl = $"/v2/super/orders/{orderId}";
-            var response = await _httpClient.DeleteAsync(requestUrl);
-            return await HandleResponse<OrderResponse>(response, "CancelSuperOrder");
+            return await ExecuteApiCall<OrderResponse>(() => _httpClient.DeleteAsync($"/v2/super/orders/{orderId}"), "CancelSuperOrder");
         }
     }
 }
