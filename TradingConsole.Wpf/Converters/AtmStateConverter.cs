@@ -18,7 +18,7 @@ namespace TradingConsole.Wpf.Converters
             // A call is ITM if Strike < Spot. A put is ITM if Strike > Spot.
             // For the purpose of coloring the whole row, we'll use a simple threshold.
             // A more sophisticated approach could be passed in the 'parameter'.
-            if (Math.Abs(strikePrice - underlyingPrice) < 50) return "ATM";
+            if (Math.Abs(strikePrice - underlyingPrice) < 10) return "ATM";
 
             // For now, let's consider a call-centric view for ITM coloring
             if (strikePrice < underlyingPrice) return "ITM_Call";

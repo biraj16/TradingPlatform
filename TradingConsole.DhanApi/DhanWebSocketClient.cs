@@ -200,6 +200,7 @@ namespace TradingConsole.DhanApi
                 0 => "IDX_I",
                 1 => "NSE_EQ",
                 2 => "NSE_FNO",
+                8 => "BSE_FNO",
                 _ => "UNKNOWN"
             };
         }

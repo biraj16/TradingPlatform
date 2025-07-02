@@ -20,7 +20,24 @@ namespace TradingConsole.Core.Models
         public int BuyQuantity { get; set; }
         public int SellQuantity { get; set; }
         public decimal LastTradedPrice { get => _lastTradedPrice; set { if (_lastTradedPrice != value) { _lastTradedPrice = value; OnPropertyChanged(); OnPropertyChanged(nameof(UnrealizedPnl)); } } }
-        public decimal UnrealizedPnl => Quantity * (LastTradedPrice - AveragePrice);
+        public decimal UnrealizedPnl
+        {
+            get
+            {
+                if (Quantity > 0) // Long position
+                {
+                    return Quantity * (LastTradedPrice - AveragePrice);
+                }
+                else if (Quantity < 0) // Short position
+                {
+                    return Math.Abs(Quantity) * (AveragePrice - LastTradedPrice);
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)

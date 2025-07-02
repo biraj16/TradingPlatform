@@ -381,49 +381,48 @@ namespace TradingConsole.DhanApi
             return FindNearMonthFutureSecurityId(baseSymbol)?.SecurityId; // Return only SecurityId for this wrapper
         }
 
+        // In TradingConsole.DhanApi/ScripMasterService.cs
 
         public string? FindOptionSecurityId(string underlyingSymbol, DateTime expiryDate, decimal strikePrice, string optionType)
         {
-            var termUnderlying = RemoveWhitespace(underlyingSymbol).ToUpperInvariant(); // Remove whitespace from underlying symbol term
+            var termUnderlying = RemoveWhitespace(underlyingSymbol).ToUpperInvariant();
             var termOptionType = optionType.Trim().ToUpperInvariant();
-            Debug.WriteLine($"[ScripMaster_FindOption] Searching for OPTION: Underlying='{underlyingSymbol}' (normalized: '{termUnderlying}'), Expiry='{expiryDate:yyyy-MM-dd}', Strike={strikePrice}, Type='{termOptionType}' (exact match on DISPLAY_NAME)");
+            Debug.WriteLine($"[ScripMaster_FindOption] Searching for OPTION: Underlying='{underlyingSymbol}' (normalized: '{termUnderlying}'), Expiry='{expiryDate:yyyy-MM-dd}', Strike={strikePrice}, Type='{termOptionType}'");
 
-            // As per user: "5th column OPTIDX, then in the 5th column we have to look for the required option."
-            // Removed segment filter as per user instruction: "FindOptionSecurityId also do not need to use exchange filter, else sensex options wont be found."
-            var options = _scripMaster
-                .Where(s => (s.InstrumentType == "OPTIDX" || s.InstrumentType == "OPTSTK") && // Include OPTSTK as well
+            // Pre-filter by the exact properties we know for sure. This is efficient.
+            var potentialOptions = _scripMaster
+                .Where(s => (s.InstrumentType == "OPTIDX" || s.InstrumentType == "OPTSTK") &&
                             s.ExpiryDate.HasValue && s.ExpiryDate.Value.Date == expiryDate.Date &&
                             s.StrikePrice == strikePrice &&
                             s.OptionType.ToUpperInvariant().Equals(termOptionType))
                 .ToList();
 
-            // Construct the expected DISPLAY_NAME format: "index name" "expiry date (dd)" "month name 1st 3 letters" "strike price" "CALL/PUT"
-            // Example: "SENSEX 26 MAR 78000 PUT"
-            // Note: `underlyingSymbol` will be "Nifty 50", "Nifty Bank", "Sensex" from MainViewModel
-            string expectedExpiryPart = expiryDate.ToString("dd MMM", CultureInfo.InvariantCulture).ToUpperInvariant(); // e.g., "26 MAR"
-            // Remove .00 if present for strike price to match common display format
-            string formattedStrike = strikePrice.ToString(CultureInfo.InvariantCulture).Replace(".00", "");
+            if (!potentialOptions.Any())
+            {
+                Debug.WriteLine($"[ScripMaster_FindOption] FAIL - No options found after initial filtering by expiry, strike, and type.");
+                return null;
+            }
 
-            // CRITICAL FIX: Adjust underlying symbol for option search to match common display names
-            string adjustedUnderlyingForOptionSearch = termUnderlying;
+            // Adjust the search term for common index names
+            string adjustedUnderlyingForSearch = termUnderlying;
             if (termUnderlying == "NIFTY50")
             {
-                adjustedUnderlyingForOptionSearch = "NIFTY";
+                adjustedUnderlyingForSearch = "NIFTY";
             }
             else if (termUnderlying == "NIFTYBANK")
             {
-                adjustedUnderlyingForOptionSearch = "BANKNIFTY";
+                adjustedUnderlyingForSearch = "BANKNIFTY";
             }
-            // Construct the search term, removing whitespace from the underlying symbol part
-            string expectedDisplayNamePart = $"{adjustedUnderlyingForOptionSearch} {expectedExpiryPart} {formattedStrike} {termOptionType}";
 
-            Debug.WriteLine($"[ScripMaster_FindOption] Expected DISPLAY_NAME for search: '{expectedDisplayNamePart}'");
+            // Now, from the potential candidates, find the one with the matching display name.
+            // This is more reliable than trying to construct a perfect string.
+            var matchingOption = potentialOptions.FirstOrDefault(s => {
+                var displayName = RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant();
 
-
-            // Search by DISPLAY_NAME (SemInstrumentName) for exact match of the constructed string, after removing whitespace from CSV value
-            var matchingOption = options
-                .FirstOrDefault(s => RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Equals(expectedDisplayNamePart));
-
+                // Check if the display name contains the correct underlying symbol.
+                // This handles cases like "NIFTY" vs "BANKNIFTY".
+                return displayName.Contains(adjustedUnderlyingForSearch);
+            });
 
             if (matchingOption != null)
             {
@@ -431,9 +430,10 @@ namespace TradingConsole.DhanApi
                 return matchingOption.SecurityId;
             }
 
-            Debug.WriteLine($"[ScripMaster_FindOption] FAIL - No option found for the given parameters.");
+            Debug.WriteLine($"[ScripMaster_FindOption] FAIL - Could not find a matching display name among potential candidates for underlying: '{adjustedUnderlyingForSearch}'");
             return null;
         }
+
 
 
         private string GetSafeValue(string[] values, Dictionary<string, int> headerMap, string columnName)
