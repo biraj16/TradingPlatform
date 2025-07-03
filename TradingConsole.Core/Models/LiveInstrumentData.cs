@@ -13,6 +13,10 @@ namespace TradingConsole.Core.Models
         private long _volume;
         private decimal _change;
         private decimal _changePercent;
+        // ADDED: Missing properties that were previously in DashboardInstrument
+        private int _lastTradedQuantity;
+        private int _lastTradeTime;
+        private decimal _avgTradePrice;
 
         public string SecurityId { get; set; } = string.Empty;
         public string Symbol { get; set; } = string.Empty;
@@ -25,7 +29,12 @@ namespace TradingConsole.Core.Models
         public decimal Close { get => _close; set { if (_close != value) { _close = value; OnPropertyChanged(); UpdateChange(); } } }
         public long Volume { get => _volume; set { if (_volume != value) { _volume = value; OnPropertyChanged(); } } }
 
-        // --- FIX: Changed setters from 'private set' to public 'set' to resolve the binding exception ---
+        // ADDED: Setters for the new properties
+        public int LastTradedQuantity { get => _lastTradedQuantity; set { if (_lastTradedQuantity != value) { _lastTradedQuantity = value; OnPropertyChanged(); } } }
+        public int LastTradeTime { get => _lastTradeTime; set { if (_lastTradeTime != value) { _lastTradeTime = value; OnPropertyChanged(); } } }
+        public decimal AvgTradePrice { get => _avgTradePrice; set { if (_avgTradePrice != value) { _avgTradePrice = value; OnPropertyChanged(); } } }
+
+
         public decimal Change { get => _change; set { if (_change != value) { _change = value; OnPropertyChanged(); } } }
         public decimal ChangePercent { get => _changePercent; set { if (_changePercent != value) { _changePercent = value; OnPropertyChanged(); } } }
 
@@ -33,7 +42,6 @@ namespace TradingConsole.Core.Models
         {
             if (Close > 0)
             {
-                // The calculation logic remains here. The public setter is to satisfy the WPF binding engine.
                 Change = LTP - Close;
                 ChangePercent = (Change / Close);
             }
