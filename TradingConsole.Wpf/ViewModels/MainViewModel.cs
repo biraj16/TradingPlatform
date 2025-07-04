@@ -31,6 +31,8 @@ namespace TradingConsole.Wpf.ViewModels
         private readonly string _dhanClientId;
         private Timer? _optionChainRefreshTimer;
         private readonly Dictionary<string, OptionDetails> _optionScripMap = new();
+        private readonly HashSet<string> _dashboardOptionsLoadedFor = new();
+        private readonly Dictionary<string, string> _nearestExpiryDates = new();
 
         private bool _isDataLoading = false;
 
@@ -357,18 +359,27 @@ namespace TradingConsole.Wpf.ViewModels
         {
             await UpdateStatusAsync("Initializing Dashboard and Subscribing...");
 
+            // Step 1: Load base instruments (Indices, Equities, Futures)
             await InitializeDashboardAsync();
 
+            // Step 2: Pre-fetch nearest expiry dates for options (one-time API call)
+            await PreloadNearestExpiriesAsync();
+
+            // Step 3: Subscribe to base instruments to get live index prices
+            await UpdateSubscriptionsAsync();
+
+            // Step 4: Load user-specific data
             await LoadPortfolioAsync();
             await LoadOrdersAsync();
 
+            // Step 5: Start timers and set initial UI selections
             _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15));
-
             await App.Current.Dispatcher.InvokeAsync(() => { SelectedIndex = Indices.FirstOrDefault(i => i.Name == "Nifty 50"); });
         }
+
         private async Task InitializeDashboardAsync()
         {
-            await UpdateStatusAsync("Configuring Dashboard (offline mode)...");
+            await UpdateStatusAsync("Configuring Dashboard...");
 
             await App.Current.Dispatcher.InvokeAsync(() =>
             {
@@ -379,7 +390,6 @@ namespace TradingConsole.Wpf.ViewModels
             var staticEquities = new[] { "HDFCBANK", "ICICIBANK", "RELIANCE INDUSTRIES", "INFOSYS" };
             var indexSymbols = new[] { "NIFTY 50", "NIFTY BANK", "SENSEX" };
             var futureUnderlyings = new[] { "NIFTY", "BANKNIFTY", "HDFCBANK", "ICICIBANK", "RELIANCE", "INFY" };
-            var optionUnderlyings = new[] { "NIFTY", "BANKNIFTY", "SENSEX" };
 
             var newInstruments = new List<DashboardInstrument>();
 
@@ -396,14 +406,10 @@ namespace TradingConsole.Wpf.ViewModels
                         DisplayName = info.SemInstrumentName,
                         SecurityId = info.SecurityId,
                         SegmentId = _scripMasterService.GetSegmentIdFromName(info.Segment),
+                        ExchId = info.ExchId, // Pass ExchId to the dashboard instrument
                         FeedType = "Ticker",
-                        UnderlyingSymbol = info.UnderlyingSymbol
+                        UnderlyingSymbol = GetUnderlyingSymbolForScripMaster(info.SemInstrumentName)
                     });
-                    Debug.WriteLine($"[Dashboard] Added index: {info.SemInstrumentName}");
-                }
-                else
-                {
-                    Debug.WriteLine($"[Dashboard] Could NOT find index: {index}");
                 }
             }
 
@@ -423,11 +429,6 @@ namespace TradingConsole.Wpf.ViewModels
                         FeedType = "Quote",
                         UnderlyingSymbol = info.UnderlyingSymbol
                     });
-                    Debug.WriteLine($"[Dashboard] Added equity: {info.SemInstrumentName}");
-                }
-                else
-                {
-                    Debug.WriteLine($"[Dashboard] Could NOT find equity: {eq}");
                 }
             }
 
@@ -440,7 +441,7 @@ namespace TradingConsole.Wpf.ViewModels
                 {
                     newInstruments.Add(new DashboardInstrument
                     {
-                        Symbol = fut.TradingSymbol,
+                        Symbol = fut.SemInstrumentName, // Use the display name for futures
                         DisplayName = fut.SemInstrumentName,
                         SecurityId = fut.SecurityId,
                         SegmentId = _scripMasterService.GetSegmentIdFromName(fut.Segment),
@@ -448,99 +449,32 @@ namespace TradingConsole.Wpf.ViewModels
                         IsFuture = true,
                         UnderlyingSymbol = symbol
                     });
-                    Debug.WriteLine($"[Dashboard] Added future: {fut.SemInstrumentName}");
-                }
-                else
-                {
-                    Debug.WriteLine($"[Dashboard] Could NOT find future for: {symbol}");
                 }
             }
 
-            // 4. Options
-            Debug.WriteLine("[Dashboard] Adding options (ATM ± 4 strikes)...");
-            foreach (var symbol in optionUnderlyings)
-            {
-                var ltp = newInstruments.FirstOrDefault(x => x.UnderlyingSymbol == symbol && x.FeedType == "Ticker")?.LTP;
-
-                if (ltp == null || ltp == 0)
-                {
-                    Debug.WriteLine($"[Dashboard] LTP not found or zero for {symbol}, using fallback.");
-                    ltp = symbol switch
-                    {
-                        "NIFTY" => 24000,
-                        "BANKNIFTY" => 52000,
-                        "SENSEX" => 80000,
-                        _ => 10000
-                    };
-                }
-
-                int step = symbol == "SENSEX" ? 100 : 50;
-                decimal roundedStrike = Math.Round(ltp.Value / step) * step;
-
-                var future = _scripMasterService.FindNearMonthFutureSecurityId(symbol);
-                if (future == null || future.ExpiryDate == null)
-                {
-                    Debug.WriteLine($"[Dashboard] Skipping options for {symbol} - No future/expiry.");
-                    continue;
-                }
-
-                for (int i = -4; i <= 4; i++)
-                {
-                    decimal strike = roundedStrike + (i * step);
-
-                    var ce = _scripMasterService.FindOptionScripInfo(symbol, future.ExpiryDate.Value, strike, "CE");
-                    var pe = _scripMasterService.FindOptionScripInfo(symbol, future.ExpiryDate.Value, strike, "PE");
-
-                    if (ce != null)
-                    {
-                        newInstruments.Add(new DashboardInstrument
-                        {
-                            Symbol = ce.TradingSymbol,
-                            DisplayName = ce.SemInstrumentName,
-                            SecurityId = ce.SecurityId,
-                            SegmentId = _scripMasterService.GetSegmentIdFromName(ce.Segment),
-                            FeedType = "Quote",
-                            UnderlyingSymbol = symbol
-                        });
-                        Debug.WriteLine($"[Dashboard] Added option CE: {ce.SemInstrumentName}");
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[Dashboard] CE not found: {symbol} {strike} CE");
-                    }
-
-                    if (pe != null)
-                    {
-                        newInstruments.Add(new DashboardInstrument
-                        {
-                            Symbol = pe.TradingSymbol,
-                            DisplayName = pe.SemInstrumentName,
-                            SecurityId = pe.SecurityId,
-                            SegmentId = _scripMasterService.GetSegmentIdFromName(pe.Segment),
-                            FeedType = "Quote",
-                            UnderlyingSymbol = symbol
-                        });
-                        Debug.WriteLine($"[Dashboard] Added option PE: {pe.SemInstrumentName}");
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[Dashboard] PE not found: {symbol} {strike} PE");
-                    }
-                }
-
-                await Task.Delay(100);
-            }
-
-            // Final UI thread update
+            // Final UI thread update for base instruments
             await App.Current.Dispatcher.InvokeAsync(() =>
             {
-                Debug.WriteLine($"[Dashboard] Committing {newInstruments.Count} instruments to UI...");
                 foreach (var item in newInstruments)
                     Dashboard.MonitoredInstruments.Add(item);
             });
 
-            await UpdateStatusAsync("Dashboard loaded (offline).");
-            Debug.WriteLine("[Dashboard] Initialization complete.");
+            await UpdateStatusAsync("Base dashboard loaded.");
+            Debug.WriteLine("[Dashboard] Base Initialization complete.");
+        }
+
+        private async Task PreloadNearestExpiriesAsync()
+        {
+            await UpdateStatusAsync("Fetching option expiry dates...");
+            foreach (var indexInfo in Indices)
+            {
+                var expiryListResponse = await _apiClient.GetExpiryListAsync(indexInfo.ScripId, MapSegmentForOptionChainApi(indexInfo.Segment));
+                string? nearestExpiry = expiryListResponse?.ExpiryDates?.FirstOrDefault();
+                if (!string.IsNullOrEmpty(nearestExpiry))
+                {
+                    _nearestExpiryDates[indexInfo.Symbol] = nearestExpiry;
+                }
+            }
         }
 
         private async Task UpdateSubscriptionsAsync()
@@ -595,6 +529,7 @@ namespace TradingConsole.Wpf.ViewModels
 
         private void OnLtpUpdateReceived(TickerPacket packet)
         {
+            // First, update the dashboard with the new price
             App.Current.Dispatcher.Invoke(() =>
             {
                 if (SelectedIndex != null && packet.SecurityId == SelectedIndex.ScripId)
@@ -603,6 +538,19 @@ namespace TradingConsole.Wpf.ViewModels
                 }
                 Dashboard.UpdateLtp(packet);
             });
+
+            // Next, check if this LTP update is for an index whose options haven't been loaded yet
+            var indexInstrument = Dashboard.MonitoredInstruments
+                                    .FirstOrDefault(i => i.SecurityId == packet.SecurityId && i.FeedType == "Ticker");
+
+            if (indexInstrument != null && !_dashboardOptionsLoadedFor.Contains(packet.SecurityId))
+            {
+                // Mark as loaded immediately to prevent duplicate processing
+                _dashboardOptionsLoadedFor.Add(packet.SecurityId);
+
+                // Load options on a background thread
+                Task.Run(() => LoadDashboardOptionsForIndexAsync(indexInstrument, packet.LastPrice));
+            }
         }
 
         private void OnPreviousCloseUpdateReceived(PreviousClosePacket packet)
@@ -853,13 +801,14 @@ namespace TradingConsole.Wpf.ViewModels
                 int endIndex = Math.Min(allStrikes.Count - 1, atmIndex + displayRange);
 
                 var strikesToDisplay = allStrikes.Skip(startIndex).Take(endIndex - startIndex + 1).ToList();
+                string scripMasterUnderlying = GetUnderlyingSymbolForScripMaster(SelectedIndex.Name);
 
                 foreach (var strikeInfo in strikesToDisplay)
                 {
                     if (strikeInfo?.Data == null) continue;
 
-                    var (callOptionDetails, _) = MapToOptionDetails(strikeInfo.Data.CallOption, strikeInfo.Price, "CE", SelectedIndex.Symbol, SelectedExpiry);
-                    var (putOptionDetails, _) = MapToOptionDetails(strikeInfo.Data.PutOption, strikeInfo.Price, "PE", SelectedIndex.Symbol, SelectedExpiry);
+                    var (callOptionDetails, _) = MapToOptionDetails(strikeInfo.Data.CallOption, strikeInfo.Price, "CE", scripMasterUnderlying, SelectedExpiry);
+                    var (putOptionDetails, _) = MapToOptionDetails(strikeInfo.Data.PutOption, strikeInfo.Price, "PE", scripMasterUnderlying, SelectedExpiry);
 
                     await App.Current.Dispatcher.InvokeAsync(() =>
                     {
@@ -900,88 +849,103 @@ namespace TradingConsole.Wpf.ViewModels
             }
         }
 
-        private async Task AddAtmOptionsToDashboardAsync(TickerIndex indexInfo)
+        private async Task LoadDashboardOptionsForIndexAsync(DashboardInstrument indexInstrument, decimal livePrice)
         {
-            if (indexInfo == null) return;
-
             try
             {
-                await UpdateStatusAsync($"Fetching dashboard options for {indexInfo.Name}...");
+                await UpdateStatusAsync($"Loading options for {indexInstrument.DisplayName}...");
 
-                string apiSecurityId = indexInfo.ScripId;
-                string apiSegment = MapSegmentForOptionChainApi(indexInfo.Segment);
-
-                var expiryListResponse = await _apiClient.GetExpiryListAsync(apiSecurityId, apiSegment);
-                string? nearestExpiry = expiryListResponse?.ExpiryDates?.FirstOrDefault();
-                if (string.IsNullOrEmpty(nearestExpiry)) return;
-
-                var optionChainResponse = await _apiClient.GetOptionChainAsync(apiSecurityId, apiSegment, nearestExpiry);
-                if (optionChainResponse?.Data?.OptionChain == null) return;
-
-                var underlyingPrice = optionChainResponse.Data.UnderlyingLastPrice;
-                var allStrikes = optionChainResponse.Data.OptionChain
-                    .Select(kvp => decimal.TryParse(kvp.Key, out var p) ? new { Price = p, Data = kvp.Value } : null)
-                    .Where(s => s != null).OrderBy(s => s!.Price).ToList();
-
-                if (!allStrikes.Any()) return;
-
-                var atmStrikeData = allStrikes.OrderBy(s => Math.Abs(s!.Price - underlyingPrice)).First();
-                var atmIndex = allStrikes.IndexOf(atmStrikeData!);
-
-                int range = 4;
-                int startIndex = Math.Max(0, atmIndex - range);
-                int endIndex = Math.Min(allStrikes.Count - 1, atmIndex + range);
-                var strikesForDashboard = allStrikes.Skip(startIndex).Take(endIndex - startIndex + 1);
-
-                int optionSegmentIdForDashboard = (indexInfo.ExchId == "BSE") ? GetSegmentIdFromName("BSE_FNO") : GetSegmentIdFromName("NSE_FNO");
-
-                foreach (var strikeInfo in strikesForDashboard)
+                if (!_nearestExpiryDates.TryGetValue(indexInstrument.Symbol, out var nearestExpiry) || string.IsNullOrEmpty(nearestExpiry))
                 {
-                    if (strikeInfo.Data == null) continue;
+                    Debug.WriteLine($"[DashboardOptions] No pre-loaded expiry found for {indexInstrument.Symbol}.");
+                    return;
+                }
 
-                    var (callOptionDetails, callDisplayName) = MapToOptionDetails(strikeInfo.Data.CallOption, strikeInfo.Price, "CE", indexInfo.Symbol, nearestExpiry);
-                    if (!string.IsNullOrEmpty(callOptionDetails.SecurityId))
+                int step = GetStrikePriceStep(indexInstrument.UnderlyingSymbol);
+                decimal atmStrike = Math.Round(livePrice / step) * step;
+
+                var strikesToLoad = new List<decimal>();
+                for (int i = -4; i <= 4; i++)
+                {
+                    strikesToLoad.Add(atmStrike + (i * step));
+                }
+
+                var newOptionInstruments = new List<DashboardInstrument>();
+                var newSubscriptions = new Dictionary<string, int>();
+                // FIX: Correctly determine the option segment based on the index's exchange ID
+                int optionSegmentId = (indexInstrument.ExchId == "BSE") ? GetSegmentIdFromName("BSE_FNO") : GetSegmentIdFromName("NSE_FNO");
+                string scripMasterUnderlying = GetUnderlyingSymbolForScripMaster(indexInstrument.DisplayName);
+
+                DateTime expiryDate = DateTime.ParseExact(nearestExpiry, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+                foreach (var strike in strikesToLoad)
+                {
+                    var ceInfo = _scripMasterService.FindOptionScripInfo(scripMasterUnderlying, expiryDate, strike, "CE");
+                    if (ceInfo != null)
                     {
-                        await App.Current.Dispatcher.InvokeAsync(() => {
-                            if (!Dashboard.MonitoredInstruments.Any(x => x.SecurityId == callOptionDetails.SecurityId))
-                            {
-                                Dashboard.MonitoredInstruments.Add(new DashboardInstrument
-                                {
-                                    Symbol = callDisplayName,
-                                    DisplayName = callDisplayName,
-                                    SecurityId = callOptionDetails.SecurityId,
-                                    FeedType = "Quote",
-                                    SegmentId = optionSegmentIdForDashboard,
-                                    UnderlyingSymbol = indexInfo.Symbol
-                                });
-                            }
-                        });
+                        var inst = new DashboardInstrument
+                        {
+                            Symbol = ceInfo.SemInstrumentName,
+                            DisplayName = ceInfo.SemInstrumentName,
+                            SecurityId = ceInfo.SecurityId,
+                            FeedType = "Quote",
+                            SegmentId = optionSegmentId,
+                            UnderlyingSymbol = indexInstrument.Symbol
+                        };
+                        newOptionInstruments.Add(inst);
+                        newSubscriptions[inst.SecurityId] = inst.SegmentId;
                     }
 
-                    var (putOptionDetails, putDisplayName) = MapToOptionDetails(strikeInfo.Data.PutOption, strikeInfo.Price, "PE", indexInfo.Symbol, nearestExpiry);
-                    if (!string.IsNullOrEmpty(putOptionDetails.SecurityId))
+                    var peInfo = _scripMasterService.FindOptionScripInfo(scripMasterUnderlying, expiryDate, strike, "PE");
+                    if (peInfo != null)
                     {
-                        await App.Current.Dispatcher.InvokeAsync(() => {
-                            if (!Dashboard.MonitoredInstruments.Any(x => x.SecurityId == putOptionDetails.SecurityId))
-                            {
-                                Dashboard.MonitoredInstruments.Add(new DashboardInstrument
-                                {
-                                    Symbol = putDisplayName,
-                                    DisplayName = putDisplayName,
-                                    SecurityId = putOptionDetails.SecurityId,
-                                    FeedType = "Quote",
-                                    SegmentId = optionSegmentIdForDashboard,
-                                    UnderlyingSymbol = indexInfo.Symbol
-                                });
-                            }
-                        });
+                        var inst = new DashboardInstrument
+                        {
+                            Symbol = peInfo.SemInstrumentName,
+                            DisplayName = peInfo.SemInstrumentName,
+                            SecurityId = peInfo.SecurityId,
+                            FeedType = "Quote",
+                            SegmentId = optionSegmentId,
+                            UnderlyingSymbol = indexInstrument.Symbol
+                        };
+                        newOptionInstruments.Add(inst);
+                        newSubscriptions[inst.SecurityId] = inst.SegmentId;
                     }
                 }
+
+                // Add to dashboard on UI thread
+                await App.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    foreach (var inst in newOptionInstruments)
+                    {
+                        if (!Dashboard.MonitoredInstruments.Any(i => i.SecurityId == inst.SecurityId))
+                        {
+                            Dashboard.MonitoredInstruments.Add(inst);
+                        }
+                    }
+                });
+
+                // Subscribe to the new options
+                if (newSubscriptions.Any())
+                {
+                    await _webSocketClient.SubscribeToInstrumentsAsync(newSubscriptions, 17); // 17 for Quote
+                }
+                await UpdateStatusAsync($"Options for {indexInstrument.DisplayName} loaded.");
             }
             catch (Exception ex)
             {
-                await UpdateStatusAsync($"Error adding options for {indexInfo.Name} to dashboard: {ex.Message}");
+                await UpdateStatusAsync($"Error loading dashboard options for {indexInstrument.DisplayName}: {ex.Message}");
+                _dashboardOptionsLoadedFor.Remove(indexInstrument.SecurityId); // Allow retry
             }
+        }
+
+        private int GetStrikePriceStep(string underlyingSymbol)
+        {
+            if (underlyingSymbol.Contains("SENSEX") || underlyingSymbol.Contains("BANKNIFTY"))
+            {
+                return 100;
+            }
+            return 50; // Default for NIFTY
         }
 
 
@@ -1055,6 +1019,17 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 Debug.WriteLine($"[OptionChainRefresh] An unexpected error occurred during periodic refresh: {ex.Message}");
             }
+        }
+
+        private string GetUnderlyingSymbolForScripMaster(string displayName)
+        {
+            return displayName switch
+            {
+                "Nifty 50" => "NIFTY",
+                "Nifty Bank" => "BANKNIFTY",
+                "Sensex" => "SENSEX",
+                _ => displayName
+            };
         }
 
         private (OptionDetails, string) MapToOptionDetails(DhanApi.Models.OptionData? apiData, decimal strikePrice, string optionType, string underlyingSymbol, string expiryDateStr)

@@ -4,6 +4,7 @@ namespace TradingConsole.Core.Models
     public class DashboardInstrument : LiveInstrumentData
     {
         public int SegmentId { get; set; }
+        public string ExchId { get; set; } = string.Empty;
         public bool IsFuture { get; set; }
         public string UnderlyingSymbol { get; set; } = string.Empty;
 
