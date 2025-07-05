@@ -41,7 +41,7 @@
             <RowDefinition Height="Auto"/>
             <!-- Trailing SL -->
             <RowDefinition Height="Auto"/>
-            <!-- Iceberg Order -->
+            <!-- Slice Order -->
             <RowDefinition Height="20"/>
             <!-- Spacer -->
             <RowDefinition Height="Auto"/>
@@ -128,25 +128,28 @@
             </Grid>
         </StackPanel>
 
-        <!-- Iceberg Order Controls -->
-        <StackPanel Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="2" Visibility="{Binding IsIcebergOrderVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
-            <CheckBox Content="Slice as Iceberg" IsChecked="{Binding IsIcebergEnabled}" Margin="5"/>
-            <StackPanel Margin="20,0,0,0" Visibility="{Binding IsIcebergEnabled, Converter={StaticResource BooleanToVisibilityConverter}}">
+        <!-- MODIFIED: This is the new Slice Order section -->
+        <StackPanel Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="2">
+            <CheckBox Content="Slice this order?" 
+                      IsChecked="{Binding IsSliceOrderEnabled, Mode=TwoWay}"
+                      IsEnabled="{Binding CanEnableSlicing}"
+                      Margin="5"/>
+            <StackPanel Margin="20,0,0,0" Visibility="{Binding IsSliceOrderVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Quantity per Leg (Lots):" VerticalAlignment="Center" Margin="5"/>
-                    <TextBox Grid.Column="1" Text="{Binding IcebergQuantity, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
+                    <TextBlock Grid.Column="0" Text="Quantity per Slice (Lots):" VerticalAlignment="Center" Margin="5"/>
+                    <TextBox Grid.Column="1" Text="{Binding SliceQuantity, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
                 </Grid>
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Number of Legs (2-10):" VerticalAlignment="Center" Margin="5"/>
-                    <TextBox Grid.Column="1" Text="{Binding IcebergLegs, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
+                    <TextBlock Grid.Column="0" Text="Interval (seconds):" VerticalAlignment="Center" Margin="5"/>
+                    <TextBox Grid.Column="1" Text="{Binding Interval, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
                 </Grid>
             </StackPanel>
         </StackPanel>

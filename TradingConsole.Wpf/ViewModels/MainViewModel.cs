@@ -24,6 +24,18 @@ namespace TradingConsole.Wpf.ViewModels
 {
     public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
+        #region Constants
+        private const string ProductTypeIntraday = "INTRADAY";
+        private const string ProductTypeMargin = "MARGIN";
+        private const string OrderTypeMarket = "MARKET";
+        private const string TransactionTypeBuy = "BUY";
+        private const string TransactionTypeSell = "SELL";
+        private const string ValidityDay = "DAY";
+        private const string FeedTypeQuote = "Quote";
+        private const string FeedTypeTicker = "Ticker";
+        #endregion
+
+        #region Private Fields
         private readonly DhanApiClient _apiClient;
         private readonly DhanWebSocketClient _webSocketClient;
         private readonly ScripMasterService _scripMasterService;
@@ -33,12 +45,14 @@ namespace TradingConsole.Wpf.ViewModels
         private readonly Dictionary<string, OptionDetails> _optionScripMap = new();
         private readonly HashSet<string> _dashboardOptionsLoadedFor = new();
         private readonly Dictionary<string, string> _nearestExpiryDates = new();
-
         private bool _isDataLoading = false;
+        #endregion
 
-
+        #region Public Properties
         public DashboardViewModel Dashboard { get; }
         public AnalysisService AnalysisService => _analysisService;
+        // NEW: Property to hold the Settings ViewModel for the UI to bind to.
+        public SettingsViewModel Settings { get; }
 
         public decimal OpenPnl => OpenPositions.Sum(p => p.UnrealizedPnl);
         public decimal BookedPnl => ClosedPositions.Sum(p => p.RealizedPnl);
@@ -142,7 +156,7 @@ namespace TradingConsole.Wpf.ViewModels
         public ICommand ConvertPositionCommand { get; }
         public ICommand ModifyOrderCommand { get; }
         public ICommand CancelOrderCommand { get; }
-
+        #endregion
 
         public MainViewModel(string clientId, string accessToken)
         {
@@ -150,6 +164,10 @@ namespace TradingConsole.Wpf.ViewModels
             _apiClient = new DhanApiClient(clientId, accessToken);
             _webSocketClient = new DhanWebSocketClient(clientId, accessToken);
             _scripMasterService = new ScripMasterService();
+
+            // NEW: Initialize the settings service and view model.
+            var settingsService = new SettingsService();
+            Settings = new SettingsViewModel(settingsService);
 
             _analysisService = new AnalysisService();
             _analysisService.OnAnalysisUpdated += OnAnalysisResultUpdated;
@@ -193,7 +211,7 @@ namespace TradingConsole.Wpf.ViewModels
 
         private void OnAnalysisResultUpdated(AnalysisResult result)
         {
-            App.Current.Dispatcher.InvokeAsync(() =>
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 var instrumentToUpdate = Dashboard.MonitoredInstruments.FirstOrDefault(i => i.SecurityId == result.SecurityId);
                 if (instrumentToUpdate != null)
@@ -216,21 +234,39 @@ namespace TradingConsole.Wpf.ViewModels
             var selectedPositions = OpenPositions.Where(pos => pos.IsSelected).ToList();
             if (!selectedPositions.Any()) { MessageBox.Show("No positions selected.", "Information", MessageBoxButton.OK, MessageBoxImage.Information); return; }
             if (MessageBox.Show($"Are you sure you want to close {selectedPositions.Count} selected position(s) at market price?", "Confirm Close Positions", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.No) return;
+
             await UpdateStatusAsync($"Closing {selectedPositions.Count} position(s)...");
-            foreach (var pos in selectedPositions)
+            try
             {
-                var orderRequest = new OrderRequest { DhanClientId = _dhanClientId, TransactionType = pos.Quantity > 0 ? "SELL" : "BUY", ExchangeSegment = "NSE_FNO", ProductType = pos.ProductType, OrderType = "MARKET", SecurityId = pos.SecurityId, Quantity = Math.Abs(pos.Quantity), Validity = "DAY" };
-                await _apiClient.PlaceOrderAsync(orderRequest);
+                foreach (var pos in selectedPositions)
+                {
+                    var orderRequest = new OrderRequest
+                    {
+                        DhanClientId = _dhanClientId,
+                        TransactionType = pos.Quantity > 0 ? TransactionTypeSell : TransactionTypeBuy,
+                        ExchangeSegment = "NSE_FNO",
+                        ProductType = pos.ProductType,
+                        OrderType = OrderTypeMarket,
+                        SecurityId = pos.SecurityId,
+                        Quantity = Math.Abs(pos.Quantity),
+                        Validity = ValidityDay
+                    };
+                    await _apiClient.PlaceOrderAsync(orderRequest);
+                }
+                await Task.Delay(1500);
+                await LoadPortfolioAsync();
             }
-            await Task.Delay(1500);
-            await LoadPortfolioAsync();
+            catch (DhanApiException ex)
+            {
+                await UpdateStatusAsync($"Failed to close positions: {ex.Message}");
+            }
         }
 
         private async Task ExecuteConvertPositionAsync(object? parameter)
         {
             if (parameter is Position position)
             {
-                var newProductType = position.ProductType == "INTRADAY" ? "MARGIN" : "INTRADAY";
+                var newProductType = position.ProductType == ProductTypeIntraday ? ProductTypeMargin : ProductTypeIntraday;
                 var convertRequest = new ConvertPositionRequest
                 {
                     DhanClientId = _dhanClientId,
@@ -239,25 +275,39 @@ namespace TradingConsole.Wpf.ViewModels
                     ConvertTo = newProductType,
                     Quantity = Math.Abs(position.Quantity)
                 };
-                var success = await _apiClient.ConvertPositionAsync(convertRequest);
-                if (success) { await UpdateStatusAsync("Position conversion successful."); await LoadPortfolioAsync(); }
-                else { await UpdateStatusAsync("Position conversion failed."); }
+                try
+                {
+                    var success = await _apiClient.ConvertPositionAsync(convertRequest);
+                    if (success)
+                    {
+                        await UpdateStatusAsync("Position conversion successful.");
+                        await LoadPortfolioAsync();
+                    }
+                    else
+                    {
+                        await UpdateStatusAsync("Position conversion failed for an unknown reason.");
+                    }
+                }
+                catch (DhanApiException ex)
+                {
+                    await UpdateStatusAsync($"Position conversion failed: {ex.Message}");
+                }
             }
         }
 
-        // MODIFIED: Pass required info to new OrderEntryViewModel constructor
         private void ExecuteModifyOrder(object? parameter)
         {
             if (parameter is not OrderBookEntry order) return;
 
             var dashboardInstrument = Dashboard.MonitoredInstruments.FirstOrDefault(i => i.SecurityId == order.SecurityId);
             var previousClose = dashboardInstrument?.Close ?? order.Price;
+            var freezeLimit = GetFreezeLimitForInstrument(order.TradingSymbol);
 
             var orderViewModel = new OrderEntryViewModel(
                 order.SecurityId,
                 order.TradingSymbol,
                 order.ExchangeSegment,
-                order.TransactionType == "BUY",
+                order.TransactionType == TransactionTypeBuy,
                 order.Price,
                 previousClose,
                 _scripMasterService.GetLotSizeForSecurity(order.SecurityId),
@@ -266,6 +316,7 @@ namespace TradingConsole.Wpf.ViewModels
                 _webSocketClient,
                 _dhanClientId,
                 _scripMasterService,
+                freezeLimit,
                 existingOrder: order
             );
 
@@ -282,21 +333,23 @@ namespace TradingConsole.Wpf.ViewModels
                 if (MessageBox.Show($"Are you sure you want to cancel order {order.OrderId}?", "Confirm Cancellation", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
                 {
                     await UpdateStatusAsync($"Cancelling order {order.OrderId}...");
-                    var response = await _apiClient.CancelOrderAsync(order.OrderId);
-                    if (response != null)
+                    try
                     {
-                        await UpdateStatusAsync($"Order {order.OrderId} cancellation processed.");
+                        var response = await _apiClient.CancelOrderAsync(order.OrderId);
+                        if (response != null)
+                        {
+                            await UpdateStatusAsync($"Order {order.OrderId} cancellation processed.");
+                        }
                     }
-                    else
+                    catch (DhanApiException ex)
                     {
-                        await UpdateStatusAsync($"Failed to cancel order {order.OrderId}.");
+                        await UpdateStatusAsync($"Failed to cancel order {order.OrderId}: {ex.Message}");
                     }
                     await LoadOrdersAsync();
                 }
             }
         }
 
-        // MODIFIED: Pass required info to new OrderEntryViewModel constructor
         private void OpenOrderWindowForOption(OptionChainRow? row, bool isBuy, bool isCall)
         {
             if (row == null) return;
@@ -305,6 +358,8 @@ namespace TradingConsole.Wpf.ViewModels
 
             string instrumentName = ConstructInstrumentName(row.StrikePrice, isCall);
             string exchangeSegment = SelectedIndex?.ExchId == "BSE" ? "BSE_FNO" : "NSE_FNO";
+            // NEW: Get the correct freeze limit for the selected index.
+            var freezeLimit = GetFreezeLimitForInstrument(SelectedIndex?.Symbol ?? "");
 
             var orderViewModel = new OrderEntryViewModel(
                 option.SecurityId,
@@ -314,11 +369,12 @@ namespace TradingConsole.Wpf.ViewModels
                 option.LTP,
                 option.PreviousClose,
                 _scripMasterService.GetLotSizeForSecurity(option.SecurityId),
-                "INTRADAY",
+                ProductTypeIntraday,
                 _apiClient,
                 _webSocketClient,
                 _dhanClientId,
-                _scripMasterService
+                _scripMasterService,
+                freezeLimit
             );
 
             var orderWindow = new OrderEntryWindow { DataContext = orderViewModel, Owner = Application.Current.MainWindow };
@@ -326,12 +382,12 @@ namespace TradingConsole.Wpf.ViewModels
             Task.Run(LoadPortfolioAsync);
         }
 
-        // MODIFIED: Pass required info to new OrderEntryViewModel constructor
         private void OpenOrderWindowForPosition(Position position, bool isBuy)
         {
             var dashboardInstrument = Dashboard.MonitoredInstruments.FirstOrDefault(i => i.SecurityId == position.SecurityId);
             var previousClose = dashboardInstrument?.Close ?? position.LastTradedPrice;
-            var exchangeSegment = dashboardInstrument?.SegmentId == 1 ? "NSE_EQ" : "NSE_FNO"; // Basic assumption
+            var exchangeSegment = dashboardInstrument?.SegmentId == 1 ? "NSE_EQ" : "NSE_FNO";
+            var freezeLimit = GetFreezeLimitForInstrument(position.Ticker);
 
             var orderViewModel = new OrderEntryViewModel(
                 position.SecurityId,
@@ -345,13 +401,30 @@ namespace TradingConsole.Wpf.ViewModels
                 _apiClient,
                 _webSocketClient,
                 _dhanClientId,
-                _scripMasterService
+                _scripMasterService,
+                freezeLimit
             );
 
             var orderWindow = new OrderEntryWindow { DataContext = orderViewModel, Owner = Application.Current.MainWindow };
             orderWindow.ShowDialog();
             Task.Run(LoadPortfolioAsync);
         }
+
+        /// <summary>
+        /// NEW: Helper method to determine the correct freeze quantity based on the instrument's name.
+        /// </summary>
+        private int GetFreezeLimitForInstrument(string instrumentName)
+        {
+            if (string.IsNullOrEmpty(instrumentName)) return Settings.NiftyFreezeQuantity; // Default
+
+            if (instrumentName.Contains("BANKNIFTY")) return Settings.BankNiftyFreezeQuantity;
+            if (instrumentName.Contains("FINNIFTY")) return Settings.FinNiftyFreezeQuantity;
+            if (instrumentName.Contains("SENSEX")) return Settings.SensexFreezeQuantity;
+            if (instrumentName.Contains("NIFTY")) return Settings.NiftyFreezeQuantity;
+
+            return Settings.NiftyFreezeQuantity; // Default for others
+        }
+
 
         private string ConstructInstrumentName(decimal strike, bool isCall) { return $"{SelectedIndex?.Symbol} {SelectedExpiry?.ToUpper()} {strike} {(isCall ? "CALL" : "PUT")}"; }
         #endregion
@@ -371,6 +444,7 @@ namespace TradingConsole.Wpf.ViewModels
             catch (Exception ex)
             {
                 await UpdateStatusAsync($"Fatal error during startup: {ex.Message}");
+                MessageBox.Show($"A critical error occurred on startup: {ex.Message}\nThe application might not function correctly.", "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -389,7 +463,7 @@ namespace TradingConsole.Wpf.ViewModels
 
                 if (indexScripInfo != null && !string.IsNullOrEmpty(indexScripInfo.SecurityId))
                 {
-                    App.Current.Dispatcher.Invoke(() =>
+                    Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         Indices.Add(new TickerIndex
                         {
@@ -408,27 +482,38 @@ namespace TradingConsole.Wpf.ViewModels
             }
         }
 
-
         private async void OnWebSocketConnected()
         {
-            await UpdateStatusAsync("Initializing Dashboard and Subscribing...");
+            try
+            {
+                await UpdateStatusAsync("Initializing Dashboard and Subscribing...");
 
-            await InitializeDashboardAsync();
-            await PreloadNearestExpiriesAsync();
-            await UpdateSubscriptionsAsync();
-            await _webSocketClient.SubscribeToOrderFeedAsync();
-            await LoadPortfolioAsync();
-            await LoadOrdersAsync();
+                await InitializeDashboardAsync();
+                await PreloadNearestExpiriesAsync();
+                await UpdateSubscriptionsAsync();
+                await _webSocketClient.SubscribeToOrderFeedAsync();
+                await LoadPortfolioAsync();
+                await LoadOrdersAsync();
 
-            _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15));
-            await App.Current.Dispatcher.InvokeAsync(() => { SelectedIndex = Indices.FirstOrDefault(i => i.Name == "Nifty 50"); });
+                _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15));
+
+                Application.Current.Dispatcher.InvokeAsync(() => { SelectedIndex = Indices.FirstOrDefault(i => i.Name == "Nifty 50"); });
+            }
+            catch (DhanApiException ex)
+            {
+                await UpdateStatusAsync($"API Error during initial load: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                await UpdateStatusAsync($"An unexpected error occurred during initial load: {ex.Message}");
+            }
         }
 
         private async Task InitializeDashboardAsync()
         {
             await UpdateStatusAsync("Configuring Dashboard...");
 
-            await App.Current.Dispatcher.InvokeAsync(() =>
+            await Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 Debug.WriteLine("[Dashboard] Clearing existing instruments...");
                 Dashboard.MonitoredInstruments.Clear();
@@ -453,7 +538,7 @@ namespace TradingConsole.Wpf.ViewModels
                         SecurityId = info.SecurityId,
                         SegmentId = _scripMasterService.GetSegmentIdFromName(info.Segment),
                         ExchId = info.ExchId,
-                        FeedType = "Ticker",
+                        FeedType = FeedTypeQuote,
                         UnderlyingSymbol = GetUnderlyingSymbolForScripMaster(info.SemInstrumentName)
                     });
                 }
@@ -471,7 +556,7 @@ namespace TradingConsole.Wpf.ViewModels
                         DisplayName = info.SemInstrumentName,
                         SecurityId = info.SecurityId,
                         SegmentId = _scripMasterService.GetSegmentIdFromName(info.Segment),
-                        FeedType = "Quote",
+                        FeedType = FeedTypeQuote,
                         UnderlyingSymbol = info.UnderlyingSymbol
                     });
                 }
@@ -489,14 +574,14 @@ namespace TradingConsole.Wpf.ViewModels
                         DisplayName = fut.SemInstrumentName,
                         SecurityId = fut.SecurityId,
                         SegmentId = _scripMasterService.GetSegmentIdFromName(fut.Segment),
-                        FeedType = "Quote",
+                        FeedType = FeedTypeQuote,
                         IsFuture = true,
                         UnderlyingSymbol = symbol
                     });
                 }
             }
 
-            await App.Current.Dispatcher.InvokeAsync(() =>
+            await Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 foreach (var item in newInstruments)
                     Dashboard.MonitoredInstruments.Add(item);
@@ -528,11 +613,11 @@ namespace TradingConsole.Wpf.ViewModels
                 .ToList();
 
             var quoteInstruments = allInstruments
-                .Where(i => i.FeedType == "Quote")
+                .Where(i => i.FeedType == FeedTypeQuote)
                 .ToDictionary(i => i.SecurityId, i => i.SegmentId);
 
             var tickerInstruments = allInstruments
-                .Where(i => i.FeedType == "Ticker")
+                .Where(i => i.FeedType == FeedTypeTicker)
                 .ToDictionary(i => i.SecurityId, i => i.SegmentId);
 
             if (quoteInstruments.Any())
@@ -572,7 +657,7 @@ namespace TradingConsole.Wpf.ViewModels
 
         private void OnLtpUpdateReceived(TickerPacket packet)
         {
-            App.Current.Dispatcher.Invoke(() =>
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 if (SelectedIndex != null && packet.SecurityId == SelectedIndex.ScripId)
                 {
@@ -580,20 +665,11 @@ namespace TradingConsole.Wpf.ViewModels
                 }
                 Dashboard.UpdateLtp(packet);
             });
-
-            var indexInstrument = Dashboard.MonitoredInstruments
-                                    .FirstOrDefault(i => i.SecurityId == packet.SecurityId && i.FeedType == "Ticker");
-
-            if (indexInstrument != null && !_dashboardOptionsLoadedFor.Contains(packet.SecurityId))
-            {
-                _dashboardOptionsLoadedFor.Add(packet.SecurityId);
-                Task.Run(() => LoadDashboardOptionsForIndexAsync(indexInstrument, packet.LastPrice));
-            }
         }
 
         private void OnOrderUpdateReceived(OrderBookEntry updatedOrder)
         {
-            App.Current.Dispatcher.InvokeAsync(async () =>
+            Application.Current.Dispatcher.InvokeAsync(async () =>
             {
                 var orderToUpdate = Orders.FirstOrDefault(o => o.OrderId == updatedOrder.OrderId);
                 if (orderToUpdate != null)
@@ -620,9 +696,10 @@ namespace TradingConsole.Wpf.ViewModels
 
         private void OnPreviousCloseUpdateReceived(PreviousClosePacket packet)
         {
-            App.Current.Dispatcher.Invoke(() =>
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 Dashboard.UpdatePreviousClose(packet);
+
                 if (SelectedIndex?.ScripId == packet.SecurityId)
                 {
                     UnderlyingPreviousClose = packet.PreviousClose;
@@ -634,7 +711,7 @@ namespace TradingConsole.Wpf.ViewModels
         {
             _analysisService.OnQuoteReceived(packet);
 
-            App.Current.Dispatcher.Invoke(() =>
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 if (SelectedIndex != null && packet.SecurityId == SelectedIndex.ScripId)
                 {
@@ -649,11 +726,20 @@ namespace TradingConsole.Wpf.ViewModels
 
                 Dashboard.UpdateQuote(packet);
             });
+
+            var indexInstrument = Dashboard.MonitoredInstruments
+                                    .FirstOrDefault(i => i.SecurityId == packet.SecurityId && i.SegmentId == 0);
+
+            if (indexInstrument != null && !_dashboardOptionsLoadedFor.Contains(packet.SecurityId))
+            {
+                _dashboardOptionsLoadedFor.Add(packet.SecurityId);
+                Task.Run(() => LoadDashboardOptionsForIndexAsync(indexInstrument, packet.LastPrice));
+            }
         }
 
         private void OnOiUpdateReceived(OiPacket packet)
         {
-            App.Current.Dispatcher.Invoke(() =>
+            Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 if (_optionScripMap.TryGetValue(packet.SecurityId, out var optionDetails))
                 {
@@ -664,19 +750,6 @@ namespace TradingConsole.Wpf.ViewModels
             });
         }
 
-
-        private void UpdateUnderlyingData()
-        {
-            if (SelectedIndex == null) return;
-
-            var selectedInstrument = Dashboard.MonitoredInstruments.FirstOrDefault(i => i.SecurityId == SelectedIndex.ScripId);
-            if (selectedInstrument != null)
-            {
-                UnderlyingPrice = selectedInstrument.LTP;
-                UnderlyingPreviousClose = selectedInstrument.Close;
-            }
-        }
-
         public async Task LoadPortfolioAsync()
         {
             await UpdateStatusAsync("Fetching portfolio...");
@@ -685,7 +758,7 @@ namespace TradingConsole.Wpf.ViewModels
                 var positionsFromApi = await _apiClient.GetPositionsAsync();
                 var fundLimitFromApi = await _apiClient.GetFundLimitAsync();
 
-                await App.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     var selectedIds = new HashSet<string>(OpenPositions.Where(p => p.IsSelected).Select(p => p.SecurityId));
                     OpenPositions.Clear();
@@ -745,11 +818,7 @@ namespace TradingConsole.Wpf.ViewModels
             }
             catch (DhanApiException ex)
             {
-                await UpdateStatusAsync($"API Error: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                await UpdateStatusAsync($"API Error fetching portfolio: {ex.Message}");
             }
         }
 
@@ -759,16 +828,12 @@ namespace TradingConsole.Wpf.ViewModels
             try
             {
                 var orders = await _apiClient.GetOrderBookAsync();
-                await App.Current.Dispatcher.InvokeAsync(() => { Orders.Clear(); if (orders != null) foreach (var order in orders.OrderByDescending(o => DateTime.Parse(o.CreateTime))) Orders.Add(order); });
+                await Application.Current.Dispatcher.InvokeAsync(() => { Orders.Clear(); if (orders != null) foreach (var order in orders.OrderByDescending(o => DateTime.Parse(o.CreateTime))) Orders.Add(order); });
                 await UpdateStatusAsync("Order book updated.");
             }
             catch (DhanApiException ex)
             {
-                await UpdateStatusAsync($"API Error: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                await UpdateStatusAsync($"API Error fetching orders: {ex.Message}");
             }
         }
 
@@ -789,12 +854,11 @@ namespace TradingConsole.Wpf.ViewModels
                 if (expiryListResponse?.ExpiryDates == null || !expiryListResponse.ExpiryDates.Any())
                 {
                     await UpdateStatusAsync($"Could not get expiry dates for {SelectedIndex.Name}.");
-                    App.Current.Dispatcher.Invoke(ExpiryDates.Clear);
-                    App.Current.Dispatcher.Invoke(OptionChainRows.Clear);
+                    await Application.Current.Dispatcher.InvokeAsync(() => { ExpiryDates.Clear(); OptionChainRows.Clear(); });
                     return;
                 }
 
-                await App.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     ExpiryDates.Clear();
                     foreach (var expiry in expiryListResponse.ExpiryDates.OrderBy(d => DateTime.ParseExact(d, "yyyy-MM-dd", CultureInfo.InvariantCulture)))
@@ -813,9 +877,9 @@ namespace TradingConsole.Wpf.ViewModels
                     await LoadOptionChainOnlyAsync(apiSecurityId, apiSegment);
                 }
             }
-            catch (Exception ex)
+            catch (DhanApiException ex)
             {
-                await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                await UpdateStatusAsync($"API Error loading option chain: {ex.Message}");
             }
             finally
             {
@@ -839,7 +903,7 @@ namespace TradingConsole.Wpf.ViewModels
                     return;
                 }
 
-                await App.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     OptionChainRows.Clear();
                     _optionScripMap.Clear();
@@ -875,7 +939,7 @@ namespace TradingConsole.Wpf.ViewModels
                     var (callOptionDetails, _) = MapToOptionDetails(strikeInfo.Data.CallOption, strikeInfo.Price, "CE", scripMasterUnderlying, SelectedExpiry);
                     var (putOptionDetails, _) = MapToOptionDetails(strikeInfo.Data.PutOption, strikeInfo.Price, "PE", scripMasterUnderlying, SelectedExpiry);
 
-                    await App.Current.Dispatcher.InvokeAsync(() =>
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         if (!string.IsNullOrEmpty(callOptionDetails.SecurityId))
                         {
@@ -900,7 +964,7 @@ namespace TradingConsole.Wpf.ViewModels
                     });
                 }
 
-                await App.Current.Dispatcher.InvokeAsync(CalculateOptionChainAggregates);
+                await Application.Current.Dispatcher.InvokeAsync(CalculateOptionChainAggregates);
 
                 if (newSubscriptions.Any())
                 {
@@ -908,9 +972,9 @@ namespace TradingConsole.Wpf.ViewModels
                 }
                 await UpdateStatusAsync($"Option chain for {SelectedIndex.Name} - {SelectedExpiry} loaded.");
             }
-            catch (Exception ex)
+            catch (DhanApiException ex)
             {
-                await UpdateStatusAsync($"An unexpected error occurred: {ex.Message}");
+                await UpdateStatusAsync($"API Error loading option chain: {ex.Message}");
             }
         }
 
@@ -952,7 +1016,7 @@ namespace TradingConsole.Wpf.ViewModels
                             Symbol = ceInfo.SemInstrumentName,
                             DisplayName = ceInfo.SemInstrumentName,
                             SecurityId = ceInfo.SecurityId,
-                            FeedType = "Quote",
+                            FeedType = FeedTypeQuote,
                             SegmentId = optionSegmentId,
                             UnderlyingSymbol = indexInstrument.Symbol
                         };
@@ -968,7 +1032,7 @@ namespace TradingConsole.Wpf.ViewModels
                             Symbol = peInfo.SemInstrumentName,
                             DisplayName = peInfo.SemInstrumentName,
                             SecurityId = peInfo.SecurityId,
-                            FeedType = "Quote",
+                            FeedType = FeedTypeQuote,
                             SegmentId = optionSegmentId,
                             UnderlyingSymbol = indexInstrument.Symbol
                         };
@@ -977,7 +1041,7 @@ namespace TradingConsole.Wpf.ViewModels
                     }
                 }
 
-                await App.Current.Dispatcher.InvokeAsync(() =>
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     foreach (var inst in newOptionInstruments)
                     {
@@ -1023,7 +1087,7 @@ namespace TradingConsole.Wpf.ViewModels
                 var optionChainResponse = await _apiClient.GetOptionChainAsync(apiSecurityId, apiSegment, SelectedExpiry);
                 if (optionChainResponse?.Data?.OptionChain != null)
                 {
-                    await App.Current.Dispatcher.InvokeAsync(() =>
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         var spotIndexInstrument = Dashboard.MonitoredInstruments.FirstOrDefault(i => i.SecurityId == SelectedIndex.ScripId);
                         if (spotIndexInstrument != null)
@@ -1076,6 +1140,10 @@ namespace TradingConsole.Wpf.ViewModels
                         CalculateOptionChainAggregates();
                     });
                 }
+            }
+            catch (DhanApiException ex)
+            {
+                Debug.WriteLine($"[OptionChainRefresh] API error during periodic refresh: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -1147,8 +1215,14 @@ namespace TradingConsole.Wpf.ViewModels
             MaxOiChange = Math.Max(maxCallOiChange, maxPutOiChange);
         }
 
-        private Task UpdateStatusAsync(string m) => App.Current.Dispatcher.InvokeAsync(() => { StatusMessage = m; OnPropertyChanged(nameof(StatusMessage)); }).Task;
-
+        private Task UpdateStatusAsync(string message)
+        {
+            return Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                StatusMessage = message;
+                OnPropertyChanged(nameof(StatusMessage));
+            }).Task;
+        }
         #endregion
 
         #region Boilerplate

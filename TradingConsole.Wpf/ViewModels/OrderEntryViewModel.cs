@@ -11,12 +11,28 @@ using TradingConsole.DhanApi.Models.WebSocket;
 
 namespace TradingConsole.Wpf.ViewModels
 {
-    // MODIFIED: Implement IDisposable to handle cleanup
     public class OrderEntryViewModel : INotifyPropertyChanged, IDisposable
     {
+        #region Constants
+        private const string OrderTypeLimit = "LIMIT";
+        private const string OrderTypeMarket = "MARKET";
+        private const string OrderTypeStopLoss = "STOP_LOSS";
+        private const string OrderTypeBracket = "BRACKET";
+        private const string OrderTypeBracketMarket = "BRACKET_MARKET";
+        private const string OrderTypeCover = "COVER";
+        private const string OrderTypeCO_Api = "CO";
+
+        private const string ProductTypeIntraday = "INTRADAY";
+        private const string ProductTypeMargin = "MARGIN";
+        private const string ProductTypeCnc = "CNC";
+
+        private const string TransactionTypeBuy = "BUY";
+        private const string TransactionTypeSell = "SELL";
+        #endregion
+
         #region Private Fields
         private readonly DhanApiClient _apiClient;
-        private readonly DhanWebSocketClient _webSocketClient; // ADDED
+        private readonly DhanWebSocketClient _webSocketClient;
         private readonly ScripMasterService _scripMasterService;
         private readonly string _securityId;
         private readonly string _dhanClientId;
@@ -24,15 +40,16 @@ namespace TradingConsole.Wpf.ViewModels
         private readonly string _exchangeSegment;
         private readonly bool _isModification = false;
         private readonly string? _orderId;
+        // NEW: The freeze limit is now a dynamic value passed into the view model.
+        private readonly int _freezeLimit;
         #endregion
 
         #region Public Properties
         public string InstrumentName { get; }
         public bool IsBuyOrder { get; }
-        public string TransactionType => IsBuyOrder ? "BUY" : "SELL";
+        public string TransactionType => IsBuyOrder ? TransactionTypeBuy : TransactionTypeSell;
         public string WindowTitle => _isModification ? "Modify Order" : "Place Order";
 
-        // ADDED: Properties for Live Price Display
         private decimal _liveLtp;
         public decimal LiveLtp { get => _liveLtp; set { _liveLtp = value; OnPropertyChanged(nameof(LiveLtp)); OnPropertyChanged(nameof(LiveLtpChange)); OnPropertyChanged(nameof(LiveLtpChangePercent)); } }
         public decimal PreviousClose { get; }
@@ -62,14 +79,26 @@ namespace TradingConsole.Wpf.ViewModels
         private decimal _trailingStopLossValue = 1;
         public decimal TrailingStopLossValue { get => _trailingStopLossValue; set { _trailingStopLossValue = value; OnPropertyChanged(nameof(TrailingStopLossValue)); } }
 
+        private bool _isSliceOrderEnabled;
+        public bool IsSliceOrderEnabled
+        {
+            get => _isSliceOrderEnabled;
+            set
+            {
+                _isSliceOrderEnabled = value;
+                OnPropertyChanged(nameof(IsSliceOrderEnabled));
+                OnPropertyChanged(nameof(IsSliceOrderVisible));
+            }
+        }
+
         private int _sliceQuantity = 1;
         public int SliceQuantity { get => _sliceQuantity; set { _sliceQuantity = value; OnPropertyChanged(nameof(SliceQuantity)); } }
 
         private int _interval = 1;
         public int Interval { get => _interval; set { _interval = value; OnPropertyChanged(nameof(Interval)); } }
 
-        public List<string> OrderTypes { get; } = new List<string> { "LIMIT", "MARKET", "STOP_LOSS", "BRACKET", "BRACKET_MARKET", "COVER", "SLICE" };
-        private string _selectedOrderType = "LIMIT";
+        public List<string> OrderTypes { get; } = new List<string> { OrderTypeLimit, OrderTypeMarket, OrderTypeStopLoss, OrderTypeBracket, OrderTypeBracketMarket, OrderTypeCover };
+        private string _selectedOrderType = OrderTypeLimit;
         public string SelectedOrderType
         {
             get => _selectedOrderType;
@@ -82,20 +111,29 @@ namespace TradingConsole.Wpf.ViewModels
                     OnPropertyChanged(nameof(IsLimitPriceVisible));
                     OnPropertyChanged(nameof(IsTriggerPriceVisible));
                     OnPropertyChanged(nameof(IsBracketOrderVisible));
-                    OnPropertyChanged(nameof(IsSliceOrderVisible));
                     OnPropertyChanged(nameof(IsProductTypeSelectionEnabled));
+                    OnPropertyChanged(nameof(CanEnableSlicing));
+
+                    if (!CanEnableSlicing)
+                    {
+                        IsSliceOrderEnabled = false;
+                    }
                 }
             }
         }
 
-        public bool IsLimitPriceVisible => _selectedOrderType == "LIMIT" || _selectedOrderType == "STOP_LOSS" || _selectedOrderType == "BRACKET" || _selectedOrderType == "SLICE";
-        public bool IsTriggerPriceVisible => _selectedOrderType == "STOP_LOSS" || _selectedOrderType == "COVER";
-        public bool IsBracketOrderVisible => _selectedOrderType == "BRACKET" || _selectedOrderType == "BRACKET_MARKET";
-        public bool IsSliceOrderVisible => _selectedOrderType == "SLICE";
+        public bool IsLimitPriceVisible => _selectedOrderType == OrderTypeLimit || _selectedOrderType == OrderTypeStopLoss || _selectedOrderType == OrderTypeBracket;
+        public bool IsTriggerPriceVisible => _selectedOrderType == OrderTypeStopLoss || _selectedOrderType == OrderTypeCover;
+        public bool IsBracketOrderVisible => _selectedOrderType == OrderTypeBracket || _selectedOrderType == OrderTypeBracketMarket;
+
+        public bool IsSliceOrderVisible => IsSliceOrderEnabled;
+
+        public bool CanEnableSlicing => SelectedOrderType == OrderTypeLimit || SelectedOrderType == OrderTypeMarket;
+
         public bool IsProductTypeSelectionEnabled => true;
 
-        public List<string> ProductTypes { get; } = new List<string> { "INTRADAY", "MARGIN", "CNC" };
-        private string _selectedProductType = "INTRADAY";
+        public List<string> ProductTypes { get; } = new List<string> { ProductTypeIntraday, ProductTypeMargin, ProductTypeCnc };
+        private string _selectedProductType = ProductTypeIntraday;
         public string SelectedProductType
         {
             get => _selectedProductType;
@@ -109,8 +147,8 @@ namespace TradingConsole.Wpf.ViewModels
         #endregion
 
         #region Constructors
-        // MODIFIED: Constructor now accepts WebSocket client and previous close price
-        public OrderEntryViewModel(string securityId, string instrumentName, string exchangeSegment, bool isBuy, decimal initialPrice, decimal previousClose, int lotSize, string productType, DhanApiClient apiClient, DhanWebSocketClient webSocketClient, string dhanClientId, ScripMasterService scripMasterService, OrderBookEntry? existingOrder = null)
+        // MODIFIED: Constructor now accepts the freeze limit for the specific instrument.
+        public OrderEntryViewModel(string securityId, string instrumentName, string exchangeSegment, bool isBuy, decimal initialPrice, decimal previousClose, int lotSize, string productType, DhanApiClient apiClient, DhanWebSocketClient webSocketClient, string dhanClientId, ScripMasterService scripMasterService, int freezeLimit, OrderBookEntry? existingOrder = null)
         {
             _apiClient = apiClient;
             _webSocketClient = webSocketClient;
@@ -125,12 +163,11 @@ namespace TradingConsole.Wpf.ViewModels
             TriggerPrice = initialPrice;
             _lotSize = lotSize;
             SelectedProductType = productType;
+            _freezeLimit = freezeLimit; // Store the freeze limit
 
-            // Setup for live price
             LiveLtp = initialPrice;
             PreviousClose = previousClose;
 
-            // Handle modification scenario
             if (existingOrder != null)
             {
                 _isModification = true;
@@ -141,7 +178,6 @@ namespace TradingConsole.Wpf.ViewModels
 
             PlaceOrderCommand = new RelayCommand(async (p) => await ExecutePlaceOrModifyOrder(), (p) => CanPlaceOrder());
 
-            // Subscribe to live updates
             _webSocketClient.OnQuoteUpdate += OnQuoteUpdateReceived;
             var subscription = new Dictionary<string, int> { { _securityId, _scripMasterService.GetSegmentIdFromName(_exchangeSegment) } };
             Task.Run(() => _webSocketClient.SubscribeToInstrumentsAsync(subscription, 17));
@@ -153,22 +189,116 @@ namespace TradingConsole.Wpf.ViewModels
 
         private async Task ExecutePlaceOrModifyOrder()
         {
-            if (_isModification)
+            try
             {
-                if (IsBracketOrderVisible) await ExecuteModifySuperOrder();
-                else await ExecuteModifyOrder();
+                if (_isModification)
+                {
+                    if (IsBracketOrderVisible) await ExecuteModifySuperOrder();
+                    else await ExecuteModifyOrder();
+                    return;
+                }
+
+                // MODIFIED: Use the dynamic _freezeLimit field instead of a hardcoded value.
+                if (IsBracketOrderVisible && TotalQuantity > _freezeLimit)
+                {
+                    await ExecuteChunkedSuperOrder();
+                }
+                else if (IsSliceOrderEnabled)
+                {
+                    await ExecutePlaceSliceOrder();
+                }
+                else if (IsBracketOrderVisible)
+                {
+                    await ExecutePlaceSuperOrder();
+                }
+                else if (SelectedOrderType == OrderTypeCover)
+                {
+                    await ExecutePlaceCoverOrder();
+                }
+                else
+                {
+                    await ExecutePlaceOrder();
+                }
             }
-            else
+            catch (DhanApiException ex)
             {
-                if (IsBracketOrderVisible) await ExecutePlaceSuperOrder();
-                else if (SelectedOrderType == "COVER") await ExecutePlaceCoverOrder();
-                else if (SelectedOrderType == "SLICE") await ExecutePlaceSliceOrder();
-                else await ExecutePlaceOrder();
+                StatusMessage = $"Order Failed: {ex.Message}";
+                MessageBox.Show(StatusMessage, "API Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            catch (Exception ex)
+            {
+                StatusMessage = $"An unexpected error occurred: {ex.Message}";
+                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async Task ExecuteChunkedSuperOrder()
+        {
+            int remainingQuantity = TotalQuantity;
+            int chunkNumber = 1;
+            // MODIFIED: Use the dynamic _freezeLimit field for calculation.
+            int totalChunks = (int)Math.Ceiling((double)TotalQuantity / _freezeLimit);
+
+            while (remainingQuantity > 0)
+            {
+                int chunkQuantity = Math.Min(remainingQuantity, _freezeLimit);
+
+                await UpdateStatusAsync($"Placing chunk {chunkNumber} of {totalChunks} ({chunkQuantity} qty)...");
+
+                var orderRequest = new SuperOrderRequest
+                {
+                    DhanClientId = _dhanClientId,
+                    TransactionType = this.TransactionType,
+                    ExchangeSegment = _exchangeSegment,
+                    ProductType = this.SelectedProductType,
+                    OrderType = SelectedOrderType == OrderTypeBracketMarket ? OrderTypeMarket : OrderTypeLimit,
+                    SecurityId = this._securityId,
+                    Quantity = chunkQuantity,
+                    Price = SelectedOrderType == OrderTypeBracketMarket ? 0 : this.Price,
+                    TargetPrice = this.TargetPrice,
+                    StopLossPrice = this.StopLossPrice,
+                    TrailingJump = IsTrailingStopLossEnabled ? (decimal?)TrailingStopLossValue : null
+                };
+
+                try
+                {
+                    var response = await _apiClient.PlaceSuperOrderAsync(orderRequest);
+                    if (response?.OrderId == null)
+                    {
+                        throw new DhanApiException($"Failed to place chunk {chunkNumber}.");
+                    }
+                    await UpdateStatusAsync($"Chunk {chunkNumber} placed successfully. ID: {response.OrderId}");
+                    remainingQuantity -= chunkQuantity;
+                    chunkNumber++;
+                    await Task.Delay(300);
+                }
+                catch (DhanApiException ex)
+                {
+                    StatusMessage = $"Error on chunk {chunkNumber}: {ex.Message}. Halting process.";
+                    MessageBox.Show(StatusMessage, "Chunking Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
+
+            StatusMessage = $"All {totalChunks} bracket order chunks placed successfully.";
+            MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private async Task ExecutePlaceSliceOrder()
         {
+            if (this.SliceQuantity * this._lotSize > this.TotalQuantity)
+            {
+                StatusMessage = "Slice quantity cannot be greater than the total quantity.";
+                MessageBox.Show(StatusMessage, "Validation Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (this.SliceQuantity <= 0)
+            {
+                StatusMessage = "Slice quantity must be a positive value.";
+                MessageBox.Show(StatusMessage, "Validation Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             StatusMessage = "Placing Slice Order...";
 
             var sliceRequest = new SliceOrderRequest
@@ -177,12 +307,12 @@ namespace TradingConsole.Wpf.ViewModels
                 TransactionType = this.TransactionType,
                 ExchangeSegment = _exchangeSegment,
                 ProductType = this.SelectedProductType,
-                OrderType = "LIMIT",
+                OrderType = this.SelectedOrderType,
                 SecurityId = this._securityId,
                 TotalQuantity = this.TotalQuantity,
                 SliceQuantity = this.SliceQuantity * this._lotSize,
                 Interval = this.Interval,
-                Price = this.Price
+                Price = this.SelectedOrderType == OrderTypeLimit ? this.Price : 0
             };
 
             var response = await _apiClient.PlaceSliceOrderAsync(sliceRequest);
@@ -190,11 +320,6 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 StatusMessage = $"Slice Order Placed Successfully! Main Order ID: {response.OrderId}";
                 MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                StatusMessage = "Failed to place Slice Order.";
-                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -207,8 +332,8 @@ namespace TradingConsole.Wpf.ViewModels
                 DhanClientId = _dhanClientId,
                 TransactionType = this.TransactionType,
                 ExchangeSegment = _exchangeSegment,
-                ProductType = "INTRADAY",
-                OrderType = "CO",
+                ProductType = ProductTypeIntraday,
+                OrderType = OrderTypeCO_Api,
                 SecurityId = this._securityId,
                 Quantity = this.TotalQuantity,
                 Price = 0,
@@ -221,18 +346,13 @@ namespace TradingConsole.Wpf.ViewModels
                 StatusMessage = $"Cover Order Placed Successfully! ID: {response.OrderId}";
                 MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
             }
-            else
-            {
-                StatusMessage = "Failed to place Cover Order.";
-                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
         }
 
         private async Task ExecutePlaceSuperOrder()
         {
-            decimal entryPrice = (SelectedOrderType == "BRACKET" && Price > 0) ? Price : 0;
+            decimal entryPrice = (SelectedOrderType == OrderTypeBracket && Price > 0) ? Price : 0;
 
-            if (SelectedOrderType == "BRACKET" && entryPrice <= 0)
+            if (SelectedOrderType == OrderTypeBracket && entryPrice <= 0)
             {
                 MessageBox.Show("Please enter a valid price greater than 0 for a LIMIT Bracket Order.", "Invalid Price", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -246,10 +366,10 @@ namespace TradingConsole.Wpf.ViewModels
                 TransactionType = this.TransactionType,
                 ExchangeSegment = _exchangeSegment,
                 ProductType = this.SelectedProductType,
-                OrderType = SelectedOrderType == "BRACKET_MARKET" ? "MARKET" : "LIMIT",
+                OrderType = SelectedOrderType == OrderTypeBracketMarket ? OrderTypeMarket : OrderTypeLimit,
                 SecurityId = this._securityId,
                 Quantity = this.TotalQuantity,
-                Price = SelectedOrderType == "BRACKET_MARKET" ? 0 : this.Price,
+                Price = SelectedOrderType == OrderTypeBracketMarket ? 0 : this.Price,
                 TargetPrice = this.TargetPrice,
                 StopLossPrice = this.StopLossPrice,
                 TrailingJump = IsTrailingStopLossEnabled ? (decimal?)TrailingStopLossValue : null
@@ -260,11 +380,6 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 StatusMessage = $"Super Order Placed Successfully! ID: {response.OrderId}";
                 MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                StatusMessage = "Failed to place Super Order.";
-                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -289,11 +404,6 @@ namespace TradingConsole.Wpf.ViewModels
                 StatusMessage = $"Super Order Modified Successfully! ID: {response.OrderId}";
                 MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
             }
-            else
-            {
-                StatusMessage = "Failed to modify Super Order.";
-                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
         }
 
         private async Task ExecutePlaceOrder()
@@ -308,19 +418,14 @@ namespace TradingConsole.Wpf.ViewModels
                 OrderType = this.SelectedOrderType,
                 SecurityId = this._securityId,
                 Quantity = this.TotalQuantity,
-                Price = (SelectedOrderType == "LIMIT" || SelectedOrderType == "STOP_LOSS") ? this.Price : 0,
-                TriggerPrice = (SelectedOrderType == "STOP_LOSS") ? this.TriggerPrice : 0
+                Price = (SelectedOrderType == OrderTypeLimit || SelectedOrderType == OrderTypeStopLoss) ? this.Price : 0,
+                TriggerPrice = (SelectedOrderType == OrderTypeStopLoss) ? this.TriggerPrice : 0
             };
             var response = await _apiClient.PlaceOrderAsync(orderRequest);
             if (response?.OrderId != null)
             {
                 StatusMessage = $"Order Placed Successfully! ID: {response.OrderId}";
                 MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                StatusMessage = "Failed to place order.";
-                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -344,15 +449,18 @@ namespace TradingConsole.Wpf.ViewModels
                 StatusMessage = $"Order Modified Successfully! ID: {response.OrderId}";
                 MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
             }
-            else
+        }
+
+        private Task UpdateStatusAsync(string message)
+        {
+            return Application.Current.Dispatcher.InvokeAsync(() =>
             {
-                StatusMessage = "Failed to modify order.";
-                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+                StatusMessage = message;
+                OnPropertyChanged(nameof(StatusMessage));
+            }).Task;
         }
         #endregion
 
-        // ADDED: Handler for live quote updates
         private void OnQuoteUpdateReceived(QuotePacket packet)
         {
             if (packet.SecurityId == _securityId)
@@ -360,9 +468,6 @@ namespace TradingConsole.Wpf.ViewModels
                 Application.Current.Dispatcher.Invoke(() =>
                 {
                     LiveLtp = packet.LastPrice;
-                    OnPropertyChanged(nameof(LiveLtp));
-                    OnPropertyChanged(nameof(LiveLtpChange));
-                    OnPropertyChanged(nameof(LiveLtpChangePercent));
                 });
             }
         }
@@ -370,7 +475,6 @@ namespace TradingConsole.Wpf.ViewModels
         #region IDisposable Implementation
         public void Dispose()
         {
-            // Unsubscribe from the event to prevent memory leaks
             if (_webSocketClient != null)
             {
                 _webSocketClient.OnQuoteUpdate -= OnQuoteUpdateReceived;

@@ -4,20 +4,22 @@ namespace TradingConsole.DhanApi.Models
 {
     public class PositionResponse
     {
+        // FIX: Properties are now nullable to prevent compiler warnings (CS8618).
+        // The JSON deserializer may not always provide a value for every property.
         [JsonProperty("securityId")]
-        public string SecurityId { get; set; }
+        public string? SecurityId { get; set; }
 
         [JsonProperty("tradingSymbol")]
-        public string TradingSymbol { get; set; }
+        public string? TradingSymbol { get; set; }
 
         [JsonProperty("exchange")]
-        public string Exchange { get; set; }
+        public string? Exchange { get; set; }
 
         [JsonProperty("productType")]
-        public string ProductType { get; set; }
+        public string? ProductType { get; set; }
 
         [JsonProperty("positionType")]
-        public string PositionType { get; set; }
+        public string? PositionType { get; set; }
 
         [JsonProperty("netQty")]
         public int NetQuantity { get; set; }
@@ -25,15 +27,12 @@ namespace TradingConsole.DhanApi.Models
         [JsonProperty("buyAvg")]
         public decimal BuyAverage { get; set; }
 
-        // --- ADDED ---
         [JsonProperty("sellAvg")]
         public decimal SellAverage { get; set; }
 
-        // --- ADDED ---
         [JsonProperty("buyQty")]
         public int BuyQuantity { get; set; }
 
-        // --- ADDED ---
         [JsonProperty("sellQty")]
         public int SellQuantity { get; set; }
 

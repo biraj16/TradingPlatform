@@ -20,17 +20,22 @@ namespace TradingConsole.DhanApi
         private readonly string _accessToken;
         private CancellationTokenSource? _cancellationTokenSource;
 
-        // Strict limit enforcement
-        private const int MAX_INSTRUMENTS_PER_REQUEST = 99; // Using 99 to be extra safe
+        // Using a semaphore ensures that subscription requests are sent one at a time, preventing race conditions.
         private readonly SemaphoreSlim _subscriptionSemaphore = new SemaphoreSlim(1, 1);
 
+        // The Dhan API has a limit on how many instruments can be subscribed to in a single request.
+        private const int MAX_INSTRUMENTS_PER_REQUEST = 99;
+
+        #region Public Events
         public event Action<TickerPacket>? OnLtpUpdate;
         public event Action<PreviousClosePacket>? OnPreviousCloseUpdate;
         public event Action<QuotePacket>? OnQuoteUpdate;
         public event Action<OiPacket>? OnOiUpdate;
-        public event Action<OrderBookEntry>? OnOrderUpdate; // ADDED: Event for order updates
+        public event Action<OrderBookEntry>? OnOrderUpdate;
         public event Action? OnConnected;
+        #endregion
 
+        #region WebSocket Message Models
         private class WebSocketSubscriptionInstrument
         {
             [JsonProperty("exchangeSegment")]
@@ -51,6 +56,7 @@ namespace TradingConsole.DhanApi
             [JsonProperty("instrumentList")]
             public List<WebSocketSubscriptionInstrument> InstrumentList { get; set; } = new List<WebSocketSubscriptionInstrument>();
         }
+        #endregion
 
         public DhanWebSocketClient(string clientId, string accessToken)
         {
@@ -58,6 +64,10 @@ namespace TradingConsole.DhanApi
             _accessToken = accessToken;
         }
 
+        /// <summary>
+        /// Establishes a connection to the Dhan WebSocket feed. If already connected, it does nothing.
+        /// Once connected, it fires the OnConnected event and starts a background task to listen for messages.
+        /// </summary>
         public async Task ConnectAsync()
         {
             if (_webSocket != null && _webSocket.State == WebSocketState.Open) return;
@@ -72,6 +82,7 @@ namespace TradingConsole.DhanApi
                 await _webSocket.ConnectAsync(uri, _cancellationTokenSource.Token);
                 Debug.WriteLine("[WebSocket] Connected Successfully.");
                 OnConnected?.Invoke();
+                // Start the message receiving loop in a non-blocking way.
                 _ = Task.Run(StartReceivingAsync, _cancellationTokenSource.Token);
             }
             catch (Exception ex)
@@ -87,7 +98,7 @@ namespace TradingConsole.DhanApi
                 _cancellationTokenSource?.Cancel();
                 try
                 {
-                    await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Changing symbols", CancellationToken.None);
+                    await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client initiated disconnect.", CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
@@ -98,7 +109,9 @@ namespace TradingConsole.DhanApi
             _webSocket = null;
         }
 
-        // ADDED: Method to subscribe to the live order feed
+        /// <summary>
+        /// Subscribes to the live order feed to receive real-time updates on order status.
+        /// </summary>
         public async Task SubscribeToOrderFeedAsync()
         {
             if (_webSocket?.State != WebSocketState.Open || _cancellationTokenSource == null) return;
@@ -118,6 +131,12 @@ namespace TradingConsole.DhanApi
             }
         }
 
+        /// <summary>
+        /// Subscribes to market data for a list of instruments.
+        /// Automatically handles chunking the request if the number of instruments exceeds the API limit.
+        /// </summary>
+        /// <param name="instruments">A dictionary of [SecurityId, SegmentId].</param>
+        /// <param name="feedType">The type of feed to subscribe to (15 for Ticker, 17 for Quote+OI).</param>
         public async Task SubscribeToInstrumentsAsync(Dictionary<string, int> instruments, int feedType = 15)
         {
             if (_webSocket?.State != WebSocketState.Open || !instruments.Any() || _cancellationTokenSource == null)
@@ -126,22 +145,18 @@ namespace TradingConsole.DhanApi
                 return;
             }
 
-            // Use semaphore to ensure only one subscription request at a time
             await _subscriptionSemaphore.WaitAsync(_cancellationTokenSource.Token);
-
             try
             {
-                // Validate instrument count before processing
+                // If the list is too large, break it into smaller, manageable chunks.
                 if (instruments.Count > MAX_INSTRUMENTS_PER_REQUEST)
                 {
-                    Debug.WriteLine($"[WebSocket] ERROR: Attempting to subscribe to {instruments.Count} instruments, but limit is {MAX_INSTRUMENTS_PER_REQUEST}");
-
-                    // Auto-chunk the instruments if too many
+                    Debug.WriteLine($"[WebSocket] INFO: Subscribing to {instruments.Count} instruments, which exceeds the limit of {MAX_INSTRUMENTS_PER_REQUEST}. Auto-chunking...");
                     var chunks = ChunkInstruments(instruments, MAX_INSTRUMENTS_PER_REQUEST);
                     foreach (var chunk in chunks)
                     {
                         await SubscribeToSingleChunkAsync(chunk, feedType);
-                        // Add delay between chunks to avoid overwhelming the server
+                        // Brief pause between sending chunks to avoid overwhelming the server.
                         await Task.Delay(300, _cancellationTokenSource.Token);
                     }
                     return;
@@ -165,13 +180,6 @@ namespace TradingConsole.DhanApi
                 ExchangeSegment = GetExchangeSegmentName(kvp.Value)
             }).ToList();
 
-            // Double-check the count before creating the request
-            if (instrumentList.Count > MAX_INSTRUMENTS_PER_REQUEST)
-            {
-                Debug.WriteLine($"[WebSocket] CRITICAL ERROR: InstrumentList count {instrumentList.Count} exceeds limit {MAX_INSTRUMENTS_PER_REQUEST}");
-                return;
-            }
-
             var subscriptionRequest = new WebSocketSubscriptionRequest
             {
                 RequestCode = feedType,
@@ -180,15 +188,7 @@ namespace TradingConsole.DhanApi
             };
 
             string jsonRequest = JsonConvert.SerializeObject(subscriptionRequest);
-
-            // Log the actual request for debugging
             Debug.WriteLine($"[WebSocket] Sending Subscription - FeedType: {feedType}, Count: {subscriptionRequest.InstrumentCount}");
-            Debug.WriteLine($"[WebSocket] JSON Length: {jsonRequest.Length} characters");
-
-            // Only log full JSON in debug builds to avoid spam
-#if DEBUG
-            Debug.WriteLine($"[WebSocket] Full JSON: {jsonRequest}");
-#endif
 
             try
             {
@@ -227,11 +227,15 @@ namespace TradingConsole.DhanApi
             };
         }
 
+        /// <summary>
+        /// The main loop for receiving messages from the WebSocket. Runs continuously in the background.
+        /// It handles both binary (market data) and text (order updates) messages.
+        /// </summary>
         private async Task StartReceivingAsync()
         {
             if (_webSocket == null || _cancellationTokenSource == null) return;
 
-            var buffer = new ArraySegment<byte>(new byte[1024 * 8]); // Increased buffer size
+            var buffer = new ArraySegment<byte>(new byte[1024 * 8]); // 8KB buffer
             try
             {
                 while (_webSocket.State == WebSocketState.Open && !_cancellationTokenSource.IsCancellationRequested)
@@ -241,7 +245,6 @@ namespace TradingConsole.DhanApi
                     {
                         ParseBinaryMessage(new ArraySegment<byte>(buffer.Array, 0, result.Count));
                     }
-                    // ADDED: Logic to handle text messages for order updates
                     else if (result.MessageType == WebSocketMessageType.Text)
                     {
                         var jsonString = Encoding.UTF8.GetString(buffer.Array, 0, result.Count);
@@ -251,7 +254,7 @@ namespace TradingConsole.DhanApi
             }
             catch (OperationCanceledException)
             {
-                Debug.WriteLine("[WebSocket] Receiving task was cancelled.");
+                Debug.WriteLine("[WebSocket] Receiving task was cancelled gracefully.");
             }
             catch (Exception ex)
             {
@@ -259,13 +262,11 @@ namespace TradingConsole.DhanApi
             }
         }
 
-        // ADDED: New method to parse JSON-based order updates
         private void ParseTextMessage(string json)
         {
             try
             {
-                // Dhan sends a simple "Connected" message which we can ignore
-                if (json.Contains("Connected")) return;
+                if (json.Contains("Connected")) return; // Ignore the initial connection confirmation message.
 
                 var orderUpdate = JsonConvert.DeserializeObject<OrderBookEntry>(json);
                 if (orderUpdate != null && !string.IsNullOrEmpty(orderUpdate.OrderId))
@@ -289,7 +290,8 @@ namespace TradingConsole.DhanApi
                 using var stream = new MemoryStream(data.Array, data.Offset, data.Count);
                 using var reader = new BinaryReader(stream);
 
-                while (reader.BaseStream.Position + 8 <= reader.BaseStream.Length)
+                // A single WebSocket message can contain multiple data packets, so we loop until the stream is fully read.
+                while (reader.BaseStream.Position + 8 <= reader.BaseStream.Length) // 8 bytes for the smallest possible header
                 {
                     byte feedCode = reader.ReadByte();
                     ushort messageLength = reader.ReadUInt16();
@@ -300,12 +302,12 @@ namespace TradingConsole.DhanApi
                     if (messageEndPosition > reader.BaseStream.Length)
                     {
                         Debug.WriteLine($"[PARSER] Incomplete packet received. Stated length {messageLength} exceeds buffer size.");
-                        break;
+                        break; // Exit loop to prevent reading past the end of the stream.
                     }
 
                     switch (feedCode)
                     {
-                        case 2: // Ticker Packet
+                        case 2: // Ticker Packet (LTP only)
                             if (reader.BaseStream.Position + 8 <= messageEndPosition)
                             {
                                 float ltp = reader.ReadSingle();
@@ -314,20 +316,18 @@ namespace TradingConsole.DhanApi
                             }
                             break;
 
-                        case 4: // Quote Packet
+                        case 4: // Quote Packet (Full market data)
                             if (reader.BaseStream.Position + 42 <= messageEndPosition)
                             {
                                 var quote = new QuotePacket { SecurityId = securityId.ToString(), LastPrice = (decimal)reader.ReadSingle(), LastTradeQuantity = reader.ReadInt16(), LastTradeTime = reader.ReadInt32(), AvgTradePrice = (decimal)reader.ReadSingle(), Volume = reader.ReadInt32(), TotalSellQuantity = reader.ReadInt32(), TotalBuyQuantity = reader.ReadInt32(), Open = (decimal)reader.ReadSingle(), Close = (decimal)reader.ReadSingle(), High = (decimal)reader.ReadSingle(), Low = (decimal)reader.ReadSingle() };
                                 OnQuoteUpdate?.Invoke(quote);
-                                Debug.WriteLine($"[PARSER] >>> SUCCESS: Parsed Quote for SecId {securityId}. LTP: {quote.LastPrice}, Volume: {quote.Volume}");
                             }
                             break;
 
-                        case 5: // OI Packet
+                        case 5: // OI Packet (Open Interest)
                             if (reader.BaseStream.Position + 4 <= messageEndPosition)
                             {
                                 int openInterest = reader.ReadInt32();
-                                Debug.WriteLine($"[PARSER] >>> SUCCESS: Parsed OI Packet for SecId {securityId}. Open Interest: {openInterest}");
                                 OnOiUpdate?.Invoke(new OiPacket { SecurityId = securityId.ToString(), OpenInterest = openInterest });
                             }
                             break;
@@ -345,6 +345,7 @@ namespace TradingConsole.DhanApi
                             break;
                     }
 
+                    // Move the stream position to the end of the current message to read the next one.
                     reader.BaseStream.Position = messageEndPosition;
                 }
             }
@@ -360,6 +361,7 @@ namespace TradingConsole.DhanApi
             _cancellationTokenSource?.Cancel();
             _webSocket?.Dispose();
             _subscriptionSemaphore?.Dispose();
+            GC.SuppressFinalize(this);
         }
     }
 }
