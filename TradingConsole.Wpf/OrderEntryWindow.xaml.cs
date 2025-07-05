@@ -22,6 +22,17 @@ namespace TradingConsole.Wpf
         public OrderEntryWindow()
         {
             InitializeComponent();
+            // ADDED: Hook into the Closed event for cleanup
+            this.Closed += OrderEntryWindow_Closed;
+        }
+
+        private void OrderEntryWindow_Closed(object? sender, EventArgs e)
+        {
+            // Ensure the ViewModel is disposed to unsubscribe from WebSocket events
+            if (this.DataContext is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
 ﻿using Newtonsoft.Json;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 
 namespace TradingConsole.DhanApi.Models
 {
@@ -39,7 +41,40 @@ namespace TradingConsole.DhanApi.Models
         public decimal? TriggerPrice { get; set; }
     }
 
-    // --- ADDED: This model is for MODIFYING an existing order ---
+    // ADDED: New model for placing a SLICE order
+    public class SliceOrderRequest
+    {
+        [JsonProperty("dhanClientId")]
+        public string DhanClientId { get; set; }
+
+        [JsonProperty("transactionType")]
+        public string TransactionType { get; set; }
+
+        [JsonProperty("exchangeSegment")]
+        public string ExchangeSegment { get; set; }
+
+        [JsonProperty("productType")]
+        public string ProductType { get; set; }
+
+        [JsonProperty("orderType")]
+        public string OrderType { get; set; } // MARKET or LIMIT
+
+        [JsonProperty("securityId")]
+        public string SecurityId { get; set; }
+
+        [JsonProperty("totalQuantity")]
+        public int TotalQuantity { get; set; }
+
+        [JsonProperty("sliceQuantity")]
+        public int SliceQuantity { get; set; }
+
+        [JsonProperty("interval")]
+        public int Interval { get; set; }
+
+        [JsonProperty("price", NullValueHandling = NullValueHandling.Ignore)]
+        public decimal? Price { get; set; }
+    }
+
     public class ModifyOrderRequest
     {
         [JsonProperty("dhanClientId")]
@@ -74,40 +109,51 @@ namespace TradingConsole.DhanApi.Models
         public string? OrderStatus { get; set; }
     }
 
-    public class OrderBookEntry
+    public class OrderBookEntry : INotifyPropertyChanged
     {
+        private string _orderStatus = string.Empty;
+        private int _filledQuantity;
+
         [JsonProperty("dhanClientId")]
-        public string DhanClientId { get; set; }
+        public string DhanClientId { get; set; } = string.Empty;
 
         [JsonProperty("orderId")]
-        public string OrderId { get; set; }
+        public string OrderId { get; set; } = string.Empty;
 
         [JsonProperty("exchangeSegment")]
-        public string ExchangeSegment { get; set; }
+        public string ExchangeSegment { get; set; } = string.Empty;
 
         [JsonProperty("productType")]
-        public string ProductType { get; set; }
+        public string ProductType { get; set; } = string.Empty;
 
         [JsonProperty("orderType")]
-        public string OrderType { get; set; }
+        public string OrderType { get; set; } = string.Empty;
 
         [JsonProperty("orderStatus")]
-        public string OrderStatus { get; set; }
+        public string OrderStatus
+        {
+            get => _orderStatus;
+            set { _orderStatus = value; OnPropertyChanged(); OnPropertyChanged(nameof(IsPending)); }
+        }
 
         [JsonProperty("transactionType")]
-        public string TransactionType { get; set; }
+        public string TransactionType { get; set; } = string.Empty;
 
         [JsonProperty("securityId")]
-        public string SecurityId { get; set; }
+        public string SecurityId { get; set; } = string.Empty;
 
         [JsonProperty("tradingSymbol")]
-        public string TradingSymbol { get; set; }
+        public string TradingSymbol { get; set; } = string.Empty;
 
         [JsonProperty("quantity")]
         public int Quantity { get; set; }
 
         [JsonProperty("filledQty")]
-        public int FilledQuantity { get; set; }
+        public int FilledQuantity
+        {
+            get => _filledQuantity;
+            set { _filledQuantity = value; OnPropertyChanged(); }
+        }
 
         [JsonProperty("price")]
         public decimal Price { get; set; }
@@ -119,13 +165,18 @@ namespace TradingConsole.DhanApi.Models
         public decimal AverageTradedPrice { get; set; }
 
         [JsonProperty("createTime")]
-        public string CreateTime { get; set; }
+        public string CreateTime { get; set; } = string.Empty;
 
         [JsonProperty("updateTime")]
-        public string UpdateTime { get; set; }
+        public string UpdateTime { get; set; } = string.Empty;
 
-        // --- ADDED: UI helper property to determine if Modify/Cancel buttons should be enabled ---
         [JsonIgnore]
         public bool IsPending => OrderStatus == "PENDING" || OrderStatus == "TRIGGER_PENDING" || OrderStatus == "AMO_RECEIVED";
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
     }
 }

@@ -7,13 +7,16 @@ using System.Windows.Input;
 using TradingConsole.Core.Models;
 using TradingConsole.DhanApi;
 using TradingConsole.DhanApi.Models;
+using TradingConsole.DhanApi.Models.WebSocket;
 
 namespace TradingConsole.Wpf.ViewModels
 {
-    public class OrderEntryViewModel : INotifyPropertyChanged
+    // MODIFIED: Implement IDisposable to handle cleanup
+    public class OrderEntryViewModel : INotifyPropertyChanged, IDisposable
     {
         #region Private Fields
         private readonly DhanApiClient _apiClient;
+        private readonly DhanWebSocketClient _webSocketClient; // ADDED
         private readonly ScripMasterService _scripMasterService;
         private readonly string _securityId;
         private readonly string _dhanClientId;
@@ -28,6 +31,14 @@ namespace TradingConsole.Wpf.ViewModels
         public bool IsBuyOrder { get; }
         public string TransactionType => IsBuyOrder ? "BUY" : "SELL";
         public string WindowTitle => _isModification ? "Modify Order" : "Place Order";
+
+        // ADDED: Properties for Live Price Display
+        private decimal _liveLtp;
+        public decimal LiveLtp { get => _liveLtp; set { _liveLtp = value; OnPropertyChanged(nameof(LiveLtp)); OnPropertyChanged(nameof(LiveLtpChange)); OnPropertyChanged(nameof(LiveLtpChangePercent)); } }
+        public decimal PreviousClose { get; }
+        public decimal LiveLtpChange => LiveLtp - PreviousClose;
+        public decimal LiveLtpChangePercent => PreviousClose == 0 ? 0 : (LiveLtpChange / PreviousClose);
+
 
         private int _quantity = 1;
         public int Quantity { get => _quantity; set { _quantity = value; OnPropertyChanged(nameof(Quantity)); OnPropertyChanged(nameof(TotalQuantity)); } }
@@ -51,7 +62,13 @@ namespace TradingConsole.Wpf.ViewModels
         private decimal _trailingStopLossValue = 1;
         public decimal TrailingStopLossValue { get => _trailingStopLossValue; set { _trailingStopLossValue = value; OnPropertyChanged(nameof(TrailingStopLossValue)); } }
 
-        public List<string> OrderTypes { get; } = new List<string> { "LIMIT", "MARKET", "STOP_LOSS", "BRACKET", "BRACKET_MARKET" };
+        private int _sliceQuantity = 1;
+        public int SliceQuantity { get => _sliceQuantity; set { _sliceQuantity = value; OnPropertyChanged(nameof(SliceQuantity)); } }
+
+        private int _interval = 1;
+        public int Interval { get => _interval; set { _interval = value; OnPropertyChanged(nameof(Interval)); } }
+
+        public List<string> OrderTypes { get; } = new List<string> { "LIMIT", "MARKET", "STOP_LOSS", "BRACKET", "BRACKET_MARKET", "COVER", "SLICE" };
         private string _selectedOrderType = "LIMIT";
         public string SelectedOrderType
         {
@@ -65,15 +82,17 @@ namespace TradingConsole.Wpf.ViewModels
                     OnPropertyChanged(nameof(IsLimitPriceVisible));
                     OnPropertyChanged(nameof(IsTriggerPriceVisible));
                     OnPropertyChanged(nameof(IsBracketOrderVisible));
+                    OnPropertyChanged(nameof(IsSliceOrderVisible));
                     OnPropertyChanged(nameof(IsProductTypeSelectionEnabled));
                 }
             }
         }
 
-        public bool IsLimitPriceVisible => _selectedOrderType == "LIMIT" || _selectedOrderType == "STOP_LOSS" || _selectedOrderType == "BRACKET";
-        public bool IsTriggerPriceVisible => _selectedOrderType == "STOP_LOSS";
+        public bool IsLimitPriceVisible => _selectedOrderType == "LIMIT" || _selectedOrderType == "STOP_LOSS" || _selectedOrderType == "BRACKET" || _selectedOrderType == "SLICE";
+        public bool IsTriggerPriceVisible => _selectedOrderType == "STOP_LOSS" || _selectedOrderType == "COVER";
         public bool IsBracketOrderVisible => _selectedOrderType == "BRACKET" || _selectedOrderType == "BRACKET_MARKET";
-        public bool IsProductTypeSelectionEnabled => true; // Always allow selection now
+        public bool IsSliceOrderVisible => _selectedOrderType == "SLICE";
+        public bool IsProductTypeSelectionEnabled => true;
 
         public List<string> ProductTypes { get; } = new List<string> { "INTRADAY", "MARGIN", "CNC" };
         private string _selectedProductType = "INTRADAY";
@@ -90,56 +109,42 @@ namespace TradingConsole.Wpf.ViewModels
         #endregion
 
         #region Constructors
-        public OrderEntryViewModel(OptionDetails option, bool isBuy, string instrumentName, DhanApiClient apiClient, string dhanClientId, ScripMasterService scripMasterService, string exchangeSegment)
+        // MODIFIED: Constructor now accepts WebSocket client and previous close price
+        public OrderEntryViewModel(string securityId, string instrumentName, string exchangeSegment, bool isBuy, decimal initialPrice, decimal previousClose, int lotSize, string productType, DhanApiClient apiClient, DhanWebSocketClient webSocketClient, string dhanClientId, ScripMasterService scripMasterService, OrderBookEntry? existingOrder = null)
         {
             _apiClient = apiClient;
-            _securityId = option.SecurityId;
+            _webSocketClient = webSocketClient;
             _dhanClientId = dhanClientId;
             _scripMasterService = scripMasterService;
-            _exchangeSegment = exchangeSegment;
+
+            _securityId = securityId;
             InstrumentName = instrumentName;
-            IsBuyOrder = isBuy;
-            Price = option.LTP;
-            TriggerPrice = option.LTP;
-            _lotSize = _scripMasterService.GetLotSizeForSecurity(_securityId);
-            PlaceOrderCommand = new RelayCommand(async (p) => await ExecutePlaceOrModifyOrder(), (p) => CanPlaceOrder());
-        }
-
-        public OrderEntryViewModel(Position position, bool isBuy, DhanApiClient apiClient, string dhanClientId, ScripMasterService scripMasterService, string exchangeSegment)
-        {
-            _apiClient = apiClient;
-            _securityId = position.SecurityId;
-            _dhanClientId = dhanClientId;
-            _scripMasterService = scripMasterService;
             _exchangeSegment = exchangeSegment;
-            InstrumentName = position.Ticker;
             IsBuyOrder = isBuy;
-            Price = position.LastTradedPrice;
-            TriggerPrice = position.LastTradedPrice;
-            SelectedProductType = position.ProductType;
-            _lotSize = _scripMasterService.GetLotSizeForSecurity(_securityId);
-            if (!isBuy && _lotSize > 0) { Quantity = Math.Abs(position.Quantity) / _lotSize; }
-            PlaceOrderCommand = new RelayCommand(async (p) => await ExecutePlaceOrModifyOrder(), (p) => CanPlaceOrder());
-        }
+            Price = initialPrice;
+            TriggerPrice = initialPrice;
+            _lotSize = lotSize;
+            SelectedProductType = productType;
 
-        public OrderEntryViewModel(OrderBookEntry order, DhanApiClient apiClient, string dhanClientId, ScripMasterService scripMasterService)
-        {
-            _apiClient = apiClient;
-            _dhanClientId = dhanClientId;
-            _scripMasterService = scripMasterService;
-            _isModification = true;
-            _orderId = order.OrderId;
-            _securityId = order.SecurityId;
-            _exchangeSegment = order.ExchangeSegment;
-            InstrumentName = order.TradingSymbol;
-            IsBuyOrder = order.TransactionType == "BUY";
-            Price = order.Price;
-            TriggerPrice = order.TriggerPrice;
-            SelectedOrderType = order.OrderType;
-            SelectedProductType = order.ProductType;
-            _lotSize = _scripMasterService.GetLotSizeForSecurity(_securityId);
-            if (_lotSize > 0) { Quantity = order.Quantity / _lotSize; }
+            // Setup for live price
+            LiveLtp = initialPrice;
+            PreviousClose = previousClose;
+
+            // Handle modification scenario
+            if (existingOrder != null)
+            {
+                _isModification = true;
+                _orderId = existingOrder.OrderId;
+                SelectedOrderType = existingOrder.OrderType;
+                if (_lotSize > 0) { Quantity = existingOrder.Quantity / _lotSize; }
+            }
+
             PlaceOrderCommand = new RelayCommand(async (p) => await ExecutePlaceOrModifyOrder(), (p) => CanPlaceOrder());
+
+            // Subscribe to live updates
+            _webSocketClient.OnQuoteUpdate += OnQuoteUpdateReceived;
+            var subscription = new Dictionary<string, int> { { _securityId, _scripMasterService.GetSegmentIdFromName(_exchangeSegment) } };
+            Task.Run(() => _webSocketClient.SubscribeToInstrumentsAsync(subscription, 17));
         }
         #endregion
 
@@ -156,7 +161,70 @@ namespace TradingConsole.Wpf.ViewModels
             else
             {
                 if (IsBracketOrderVisible) await ExecutePlaceSuperOrder();
+                else if (SelectedOrderType == "COVER") await ExecutePlaceCoverOrder();
+                else if (SelectedOrderType == "SLICE") await ExecutePlaceSliceOrder();
                 else await ExecutePlaceOrder();
+            }
+        }
+
+        private async Task ExecutePlaceSliceOrder()
+        {
+            StatusMessage = "Placing Slice Order...";
+
+            var sliceRequest = new SliceOrderRequest
+            {
+                DhanClientId = _dhanClientId,
+                TransactionType = this.TransactionType,
+                ExchangeSegment = _exchangeSegment,
+                ProductType = this.SelectedProductType,
+                OrderType = "LIMIT",
+                SecurityId = this._securityId,
+                TotalQuantity = this.TotalQuantity,
+                SliceQuantity = this.SliceQuantity * this._lotSize,
+                Interval = this.Interval,
+                Price = this.Price
+            };
+
+            var response = await _apiClient.PlaceSliceOrderAsync(sliceRequest);
+            if (response?.OrderId != null)
+            {
+                StatusMessage = $"Slice Order Placed Successfully! Main Order ID: {response.OrderId}";
+                MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                StatusMessage = "Failed to place Slice Order.";
+                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async Task ExecutePlaceCoverOrder()
+        {
+            StatusMessage = "Placing Cover Order...";
+
+            var orderRequest = new OrderRequest
+            {
+                DhanClientId = _dhanClientId,
+                TransactionType = this.TransactionType,
+                ExchangeSegment = _exchangeSegment,
+                ProductType = "INTRADAY",
+                OrderType = "CO",
+                SecurityId = this._securityId,
+                Quantity = this.TotalQuantity,
+                Price = 0,
+                TriggerPrice = this.TriggerPrice
+            };
+
+            var response = await _apiClient.PlaceOrderAsync(orderRequest);
+            if (response?.OrderId != null)
+            {
+                StatusMessage = $"Cover Order Placed Successfully! ID: {response.OrderId}";
+                MessageBox.Show(StatusMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                StatusMessage = "Failed to place Cover Order.";
+                MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -280,6 +348,32 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 StatusMessage = "Failed to modify order.";
                 MessageBox.Show(StatusMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        #endregion
+
+        // ADDED: Handler for live quote updates
+        private void OnQuoteUpdateReceived(QuotePacket packet)
+        {
+            if (packet.SecurityId == _securityId)
+            {
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    LiveLtp = packet.LastPrice;
+                    OnPropertyChanged(nameof(LiveLtp));
+                    OnPropertyChanged(nameof(LiveLtpChange));
+                    OnPropertyChanged(nameof(LiveLtpChangePercent));
+                });
+            }
+        }
+
+        #region IDisposable Implementation
+        public void Dispose()
+        {
+            // Unsubscribe from the event to prevent memory leaks
+            if (_webSocketClient != null)
+            {
+                _webSocketClient.OnQuoteUpdate -= OnQuoteUpdateReceived;
             }
         }
         #endregion

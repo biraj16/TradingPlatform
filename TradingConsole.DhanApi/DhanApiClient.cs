@@ -14,10 +14,8 @@ namespace TradingConsole.DhanApi
     public class DhanApiClient
     {
         private readonly HttpClient _httpClient;
-        // Introduce a semaphore to control API call rate/concurrency
-        private readonly SemaphoreSlim _apiCallSemaphore = new SemaphoreSlim(1, 1); // Allow 1 concurrent API call
-        // CRITICAL FIX: Changed to public const int so MainViewModel can access it.
-        public const int ApiCallDelayMs = 210; // Delay between API calls to respect rate limits (1000ms / 5 calls = 200ms, plus a small buffer)
+        private readonly SemaphoreSlim _apiCallSemaphore = new SemaphoreSlim(1, 1);
+        public const int ApiCallDelayMs = 210;
 
         private class OptionChainRequestPayload
         {
@@ -62,7 +60,6 @@ namespace TradingConsole.DhanApi
             }
         }
 
-        // Wrapper to apply rate limiting to API calls
         private async Task<T?> ExecuteApiCall<T>(Func<Task<HttpResponseMessage>> apiCallFunc, string apiName) where T : class
         {
             await _apiCallSemaphore.WaitAsync();
@@ -74,7 +71,6 @@ namespace TradingConsole.DhanApi
             finally
             {
                 _apiCallSemaphore.Release();
-                // Add a delay after each API call to respect rate limits
                 await Task.Delay(ApiCallDelayMs);
             }
         }
@@ -174,6 +170,18 @@ namespace TradingConsole.DhanApi
                 var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                 return await _httpClient.PostAsync(requestUrl, httpContent);
             }, "PlaceOrder");
+        }
+
+        // ADDED: New method for placing slice orders
+        public async Task<OrderResponse?> PlaceSliceOrderAsync(SliceOrderRequest sliceRequest)
+        {
+            return await ExecuteApiCall<OrderResponse>(async () =>
+            {
+                var requestUrl = "/v2/orders/slice";
+                var jsonPayload = JsonConvert.SerializeObject(sliceRequest);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                return await _httpClient.PostAsync(requestUrl, httpContent);
+            }, "PlaceSliceOrder");
         }
 
         public async Task<List<OrderBookEntry>?> GetOrderBookAsync()

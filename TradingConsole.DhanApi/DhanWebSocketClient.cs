@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using TradingConsole.DhanApi.Models;
 using TradingConsole.DhanApi.Models.WebSocket;
 
 namespace TradingConsole.DhanApi
@@ -27,6 +28,7 @@ namespace TradingConsole.DhanApi
         public event Action<PreviousClosePacket>? OnPreviousCloseUpdate;
         public event Action<QuotePacket>? OnQuoteUpdate;
         public event Action<OiPacket>? OnOiUpdate;
+        public event Action<OrderBookEntry>? OnOrderUpdate; // ADDED: Event for order updates
         public event Action? OnConnected;
 
         private class WebSocketSubscriptionInstrument
@@ -94,6 +96,26 @@ namespace TradingConsole.DhanApi
             }
             _webSocket?.Dispose();
             _webSocket = null;
+        }
+
+        // ADDED: Method to subscribe to the live order feed
+        public async Task SubscribeToOrderFeedAsync()
+        {
+            if (_webSocket?.State != WebSocketState.Open || _cancellationTokenSource == null) return;
+
+            var orderSubscriptionRequest = new { customers = new[] { _clientId } };
+            string jsonRequest = JsonConvert.SerializeObject(orderSubscriptionRequest);
+            var buffer = new ArraySegment<byte>(Encoding.UTF8.GetBytes(jsonRequest));
+
+            try
+            {
+                await _webSocket.SendAsync(buffer, WebSocketMessageType.Text, true, _cancellationTokenSource.Token);
+                Debug.WriteLine("[WebSocket] Successfully subscribed to order feed.");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[WebSocket] Error subscribing to order feed: {ex.Message}");
+            }
         }
 
         public async Task SubscribeToInstrumentsAsync(Dictionary<string, int> instruments, int feedType = 15)
@@ -209,15 +231,21 @@ namespace TradingConsole.DhanApi
         {
             if (_webSocket == null || _cancellationTokenSource == null) return;
 
-            var buffer = new byte[1024 * 4];
+            var buffer = new ArraySegment<byte>(new byte[1024 * 8]); // Increased buffer size
             try
             {
                 while (_webSocket.State == WebSocketState.Open && !_cancellationTokenSource.IsCancellationRequested)
                 {
-                    var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), _cancellationTokenSource.Token);
+                    var result = await _webSocket.ReceiveAsync(buffer, _cancellationTokenSource.Token);
                     if (result.MessageType == WebSocketMessageType.Binary)
                     {
-                        ParseBinaryMessage(new ArraySegment<byte>(buffer, 0, result.Count));
+                        ParseBinaryMessage(new ArraySegment<byte>(buffer.Array, 0, result.Count));
+                    }
+                    // ADDED: Logic to handle text messages for order updates
+                    else if (result.MessageType == WebSocketMessageType.Text)
+                    {
+                        var jsonString = Encoding.UTF8.GetString(buffer.Array, 0, result.Count);
+                        ParseTextMessage(jsonString);
                     }
                 }
             }
@@ -228,6 +256,27 @@ namespace TradingConsole.DhanApi
             catch (Exception ex)
             {
                 Debug.WriteLine($"[WebSocket] Error receiving data: {ex.Message}");
+            }
+        }
+
+        // ADDED: New method to parse JSON-based order updates
+        private void ParseTextMessage(string json)
+        {
+            try
+            {
+                // Dhan sends a simple "Connected" message which we can ignore
+                if (json.Contains("Connected")) return;
+
+                var orderUpdate = JsonConvert.DeserializeObject<OrderBookEntry>(json);
+                if (orderUpdate != null && !string.IsNullOrEmpty(orderUpdate.OrderId))
+                {
+                    Debug.WriteLine($"[PARSER] >>> SUCCESS: Parsed Order Update for OrderId {orderUpdate.OrderId}. Status: {orderUpdate.OrderStatus}");
+                    OnOrderUpdate?.Invoke(orderUpdate);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[PARSER] CRITICAL ERROR parsing text message: {ex.Message}. JSON: {json}");
             }
         }
 
