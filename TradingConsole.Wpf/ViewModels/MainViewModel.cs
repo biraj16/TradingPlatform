@@ -51,7 +51,6 @@ namespace TradingConsole.Wpf.ViewModels
         #region Public Properties
         public DashboardViewModel Dashboard { get; }
         public AnalysisService AnalysisService => _analysisService;
-        // NEW: Property to hold the Settings ViewModel for the UI to bind to.
         public SettingsViewModel Settings { get; }
 
         public decimal OpenPnl => OpenPositions.Sum(p => p.UnrealizedPnl);
@@ -165,14 +164,16 @@ namespace TradingConsole.Wpf.ViewModels
             _webSocketClient = new DhanWebSocketClient(clientId, accessToken);
             _scripMasterService = new ScripMasterService();
 
-            // NEW: Initialize the settings service and view model.
             var settingsService = new SettingsService();
             Settings = new SettingsViewModel(settingsService);
 
             _analysisService = new AnalysisService();
             _analysisService.OnAnalysisUpdated += OnAnalysisResultUpdated;
 
-            Dashboard = new DashboardViewModel();
+            // MODIFIED: Pass the scrip master service to the DashboardViewModel
+            Dashboard = new DashboardViewModel(_scripMasterService);
+            // NEW: Subscribe to the event that fires when a user adds an instrument from search results
+            Dashboard.InstrumentSelectedForAddition += OnInstrumentSelectedForAddition;
 
             _webSocketClient.OnConnected += OnWebSocketConnected;
             _webSocketClient.OnLtpUpdate += OnLtpUpdateReceived;
@@ -207,6 +208,40 @@ namespace TradingConsole.Wpf.ViewModels
             CancelOrderCommand = new RelayCommand(async (p) => await ExecuteCancelOrderAsync(p));
 
             Task.Run(() => LoadDataOnStartupAsync());
+        }
+
+        /// <summary>
+        /// NEW: Event handler that adds a searched instrument to the dashboard and subscribes to its feed.
+        /// </summary>
+        private async void OnInstrumentSelectedForAddition(ScripInfo scripInfo)
+        {
+            if (Dashboard.MonitoredInstruments.Any(i => i.SecurityId == scripInfo.SecurityId))
+            {
+                await UpdateStatusAsync($"{scripInfo.SemInstrumentName} is already in the dashboard.");
+                return;
+            }
+
+            var newInstrument = new DashboardInstrument
+            {
+                Symbol = scripInfo.TradingSymbol,
+                DisplayName = scripInfo.SemInstrumentName,
+                SecurityId = scripInfo.SecurityId,
+                SegmentId = _scripMasterService.GetSegmentIdFromName(scripInfo.Segment),
+                ExchId = scripInfo.ExchId,
+                FeedType = FeedTypeQuote, // Always subscribe to quote for full data
+                UnderlyingSymbol = scripInfo.UnderlyingSymbol,
+                IsFuture = scripInfo.InstrumentType.StartsWith("FUT")
+            };
+
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                Dashboard.MonitoredInstruments.Add(newInstrument);
+            });
+
+            var subscription = new Dictionary<string, int> { { newInstrument.SecurityId, newInstrument.SegmentId } };
+            await _webSocketClient.SubscribeToInstrumentsAsync(subscription, 17); // 17 for Quote
+
+            await UpdateStatusAsync($"{newInstrument.DisplayName} added to dashboard and subscribed.");
         }
 
         private void OnAnalysisResultUpdated(AnalysisResult result)
@@ -358,7 +393,6 @@ namespace TradingConsole.Wpf.ViewModels
 
             string instrumentName = ConstructInstrumentName(row.StrikePrice, isCall);
             string exchangeSegment = SelectedIndex?.ExchId == "BSE" ? "BSE_FNO" : "NSE_FNO";
-            // NEW: Get the correct freeze limit for the selected index.
             var freezeLimit = GetFreezeLimitForInstrument(SelectedIndex?.Symbol ?? "");
 
             var orderViewModel = new OrderEntryViewModel(
@@ -410,19 +444,16 @@ namespace TradingConsole.Wpf.ViewModels
             Task.Run(LoadPortfolioAsync);
         }
 
-        /// <summary>
-        /// NEW: Helper method to determine the correct freeze quantity based on the instrument's name.
-        /// </summary>
         private int GetFreezeLimitForInstrument(string instrumentName)
         {
-            if (string.IsNullOrEmpty(instrumentName)) return Settings.NiftyFreezeQuantity; // Default
+            if (string.IsNullOrEmpty(instrumentName)) return Settings.NiftyFreezeQuantity;
 
             if (instrumentName.Contains("BANKNIFTY")) return Settings.BankNiftyFreezeQuantity;
             if (instrumentName.Contains("FINNIFTY")) return Settings.FinNiftyFreezeQuantity;
             if (instrumentName.Contains("SENSEX")) return Settings.SensexFreezeQuantity;
             if (instrumentName.Contains("NIFTY")) return Settings.NiftyFreezeQuantity;
 
-            return Settings.NiftyFreezeQuantity; // Default for others
+            return Settings.NiftyFreezeQuantity;
         }
 
 

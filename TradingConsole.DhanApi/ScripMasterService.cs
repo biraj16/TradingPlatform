@@ -79,6 +79,32 @@ namespace TradingConsole.DhanApi
             }
         }
 
+        /// <summary>
+        /// NEW: Searches the loaded scrip master for instruments matching the search term.
+        /// Prioritizes equities and futures.
+        /// </summary>
+        public List<ScripInfo> SearchInstruments(string searchTerm, int maxResults = 20)
+        {
+            if (string.IsNullOrWhiteSpace(searchTerm) || searchTerm.Length < 3)
+            {
+                return new List<ScripInfo>();
+            }
+
+            var normalizedTerm = searchTerm.ToUpperInvariant();
+
+            // Find instruments where the name or symbol contains the search term.
+            // Prioritize results that START WITH the search term.
+            var results = _scripMaster
+                .Where(s => s.InstrumentType == "EQUITY" || s.InstrumentType == "FUTSTK" || s.InstrumentType == "FUTIDX")
+                .Where(s => s.SemInstrumentName.ToUpperInvariant().Contains(normalizedTerm) || s.TradingSymbol.ToUpperInvariant().Contains(normalizedTerm))
+                .OrderBy(s => s.SemInstrumentName.ToUpperInvariant().StartsWith(normalizedTerm) ? 0 : 1)
+                .ThenBy(s => s.SemInstrumentName)
+                .Take(maxResults)
+                .ToList();
+
+            return results;
+        }
+
         public void ResolveInstrumentDetails(List<DashboardInstrument> instruments)
         {
             foreach (var inst in instruments)
@@ -107,7 +133,6 @@ namespace TradingConsole.DhanApi
             }
         }
 
-        // RESTORED: Your original, correct logic for finding equities.
         public ScripInfo? FindEquityScripInfo(string tradingSymbol)
         {
             var term = RemoveWhitespace(tradingSymbol).ToUpperInvariant();
@@ -115,14 +140,12 @@ namespace TradingConsole.DhanApi
             return result ?? _scripMaster.FirstOrDefault(s => s.ExchId.ToUpperInvariant().Equals("NSE") && s.InstrumentType == "EQUITY" && RemoveWhitespace(s.TradingSymbol).ToUpperInvariant().Contains(term));
         }
 
-        // RESTORED: Your original, correct logic for finding indices.
         public ScripInfo? FindIndexScripInfo(string indexName)
         {
             var term = RemoveWhitespace(indexName).ToUpperInvariant();
             return _scripMaster.FirstOrDefault(s => s.InstrumentType == "INDEX" && RemoveWhitespace(s.SemInstrumentName).ToUpperInvariant().Equals(term));
         }
 
-        // RESTORED: Your original, more robust logic for finding futures.
         public ScripInfo? FindNearMonthFutureSecurityId(string underlyingSymbol)
         {
             var normalizedUnderlyingSymbol = RemoveWhitespace(underlyingSymbol).ToUpperInvariant();
@@ -186,7 +209,6 @@ namespace TradingConsole.DhanApi
             return null;
         }
 
-        // RESTORED: Your original logic for finding options, adapted to return the full ScripInfo object.
         public ScripInfo? FindOptionScripInfo(string underlyingSymbol, DateTime expiryDate, decimal strikePrice, string optionType)
         {
             var termUnderlying = RemoveWhitespace(underlyingSymbol).ToUpperInvariant();

@@ -187,7 +187,6 @@
                 </DockPanel>
             </TabItem>
 
-            <!-- MODIFIED: This is the new Control Panel tab with Freeze Quantity settings -->
             <TabItem Header="Control Panel">
                 <DockPanel Margin="5">
                     <GroupBox Header="Fund Summary" DockPanel.Dock="Left" VerticalAlignment="Top" Padding="15" Margin="5" MinWidth="350" FontWeight="SemiBold" BorderBrush="#DDDDDD">
@@ -501,37 +500,77 @@
                 </DockPanel>
             </TabItem>
 
-            <!-- Dashboard Tab (FULLY UPDATED) -->
+            <!-- MODIFIED: Dashboard Tab with Search Functionality -->
             <TabItem Header="Dashboard">
-                <DataGrid ItemsSource="{Binding Dashboard.MonitoredInstruments}" 
-                          IsReadOnly="True" 
-                          AutoGenerateColumns="False" 
-                          GridLinesVisibility="Horizontal"
-                          CanUserAddRows="False">
-                    <DataGrid.Columns>
-                        <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="*" FontWeight="SemiBold"/>
-                        <DataGridTextColumn Header="LTP" Binding="{Binding LTP, StringFormat=N2}" Width="Auto"/>
-                        <DataGridTemplateColumn Header="Change" Width="*">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBlock Foreground="{Binding Change, Converter={StaticResource ValueToBrushConverter}, Mode=OneWay}">
-                                        <Run Text="{Binding Change, StringFormat=N2, Mode=OneWay}"/>
-                                        <Run Text="{Binding ChangePercent, StringFormat=' ({0:P2})', Mode=OneWay}"/>
-                                    </TextBlock>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="Open" Binding="{Binding Open, StringFormat=N2}" Width="Auto"/>
-                        <DataGridTextColumn Header="High" Binding="{Binding High, StringFormat=N2}" Width="Auto"/>
-                        <DataGridTextColumn Header="Low" Binding="{Binding Low, StringFormat=N2}" Width="Auto"/>
-                        <DataGridTextColumn Header="ATP" Binding="{Binding AvgTradePrice, StringFormat=N2}" Width="Auto"/>
-                        <DataGridTextColumn Header="Prev. Close" Binding="{Binding Close, StringFormat=N2}" Width="Auto"/>
-                        <DataGridTextColumn Header="Volume" Binding="{Binding Volume, StringFormat=N0}" Width="Auto"/>
-                        <DataGridTextColumn Header="OI" Binding="{Binding OpenInterest, StringFormat=N0}" Width="Auto"/>
-                        <DataGridTextColumn Header="Last Trade Qty" Binding="{Binding LastTradedQuantity, StringFormat=N0}" Width="Auto"/>
-                        <DataGridTextColumn Header="Last Trade Time" Binding="{Binding LastTradeTime}" Width="Auto"/>
-                    </DataGrid.Columns>
-                </DataGrid>
+                <DockPanel DataContext="{Binding Dashboard}">
+                    <!-- NEW: Search Panel -->
+                    <Border DockPanel.Dock="Top" Padding="10" Background="#f8f9fa" BorderBrush="#e9ecef" BorderThickness="0,0,0,1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Add Instrument:" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding SearchTerm, UpdateSourceTrigger=PropertyChanged}" Margin="10,0,0,0" VerticalAlignment="Center" ToolTip="Type 3 or more characters to search for equities and futures"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- NEW: Search Results Panel -->
+                    <Popup IsOpen="{Binding SearchResults.Count, Converter={StaticResource ValueToSignConverter}, ConverterParameter=Positive}" 
+                           Placement="Bottom" 
+                           PlacementTarget="{Binding ElementName=DashboardSearchBox}"
+                           StaysOpen="False">
+                        <Border Background="White" BorderBrush="LightGray" BorderThickness="1" MaxHeight="300">
+                            <ListView ItemsSource="{Binding SearchResults}">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Width="400">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding SemInstrumentName}" VerticalAlignment="Center" ToolTip="{Binding TradingSymbol}"/>
+                                            <Button Grid.Column="1" Content="Add" Padding="8,2" 
+                                                    Command="{Binding DataContext.AddInstrumentCommand, RelativeSource={RelativeSource AncestorType=TabControl}}" 
+                                                    CommandParameter="{Binding}"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </Border>
+                    </Popup>
+
+                    <!-- Existing DataGrid for Monitored Instruments -->
+                    <DataGrid ItemsSource="{Binding MonitoredInstruments}" 
+                              IsReadOnly="True" 
+                              AutoGenerateColumns="False" 
+                              GridLinesVisibility="Horizontal"
+                              CanUserAddRows="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Symbol" Binding="{Binding DisplayName}" Width="*" FontWeight="SemiBold"/>
+                            <DataGridTextColumn Header="LTP" Binding="{Binding LTP, StringFormat=N2}" Width="Auto"/>
+                            <DataGridTemplateColumn Header="Change" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Foreground="{Binding Change, Converter={StaticResource ValueToBrushConverter}, Mode=OneWay}">
+                                            <Run Text="{Binding Change, StringFormat=N2, Mode=OneWay}"/>
+                                            <Run Text="{Binding ChangePercent, StringFormat=' ({0:P2})', Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Open" Binding="{Binding Open, StringFormat=N2}" Width="Auto"/>
+                            <DataGridTextColumn Header="High" Binding="{Binding High, StringFormat=N2}" Width="Auto"/>
+                            <DataGridTextColumn Header="Low" Binding="{Binding Low, StringFormat=N2}" Width="Auto"/>
+                            <DataGridTextColumn Header="ATP" Binding="{Binding AvgTradePrice, StringFormat=N2}" Width="Auto"/>
+                            <DataGridTextColumn Header="Prev. Close" Binding="{Binding Close, StringFormat=N2}" Width="Auto"/>
+                            <DataGridTextColumn Header="Volume" Binding="{Binding Volume, StringFormat=N0}" Width="Auto"/>
+                            <DataGridTextColumn Header="OI" Binding="{Binding OpenInterest, StringFormat=N0}" Width="Auto"/>
+                            <DataGridTextColumn Header="Last Trade Qty" Binding="{Binding LastTradedQuantity, StringFormat=N0}" Width="Auto"/>
+                            <DataGridTextColumn Header="Last Trade Time" Binding="{Binding LastTradeTime}" Width="Auto"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
             </TabItem>
         </TabControl>
 

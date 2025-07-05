@@ -1,17 +1,70 @@
-﻿using System.Collections.ObjectModel;
+﻿using System;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Windows.Input;
 using TradingConsole.Core.Models;
+using TradingConsole.DhanApi;
+using TradingConsole.DhanApi.Models;
 using TradingConsole.DhanApi.Models.WebSocket;
+using TradingConsole.Wpf.Services;
 
 namespace TradingConsole.Wpf.ViewModels
 {
-    public class DashboardViewModel
+    public class DashboardViewModel : INotifyPropertyChanged
     {
+        private readonly ScripMasterService _scripMasterService;
+
         public ObservableCollection<DashboardInstrument> MonitoredInstruments { get; } = new ObservableCollection<DashboardInstrument>();
 
-        public DashboardViewModel()
+        // NEW: Properties for the search functionality
+        private string _searchTerm = string.Empty;
+        public string SearchTerm
         {
-            // The list is populated by the MainViewModel.
+            get => _searchTerm;
+            set
+            {
+                _searchTerm = value;
+                OnPropertyChanged();
+                // Trigger search automatically as the user types
+                ExecuteSearch(null);
+            }
+        }
+
+        public ObservableCollection<ScripInfo> SearchResults { get; }
+        public ICommand AddInstrumentCommand { get; }
+        public event Action<ScripInfo>? InstrumentSelectedForAddition;
+
+        public DashboardViewModel(ScripMasterService scripMasterService)
+        {
+            _scripMasterService = scripMasterService;
+            SearchResults = new ObservableCollection<ScripInfo>();
+            AddInstrumentCommand = new RelayCommand(ExecuteAddInstrument);
+        }
+
+        private void ExecuteSearch(object? parameter)
+        {
+            var results = _scripMasterService.SearchInstruments(SearchTerm);
+            SearchResults.Clear();
+            foreach (var result in results)
+            {
+                SearchResults.Add(result);
+            }
+        }
+
+        private void ExecuteAddInstrument(object? parameter)
+        {
+            if (parameter is ScripInfo scripInfo)
+            {
+                // Raise an event to notify the MainViewModel to handle the addition and subscription
+                InstrumentSelectedForAddition?.Invoke(scripInfo);
+
+                // Clear search results and term after adding
+                SearchResults.Clear();
+                _searchTerm = string.Empty;
+                OnPropertyChanged(nameof(SearchTerm));
+            }
         }
 
         public void UpdateLtp(TickerPacket packet)
@@ -56,6 +109,12 @@ namespace TradingConsole.Wpf.ViewModels
             {
                 instrument.Close = packet.PreviousClose;
             }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
     }
 }
