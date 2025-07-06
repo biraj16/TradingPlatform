@@ -1,0 +1,163 @@
+﻿<Window x:Class="TradingConsole.Wpf.OrderEntryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:TradingConsole.Wpf"
+        xmlns:viewModels="clr-namespace:TradingConsole.Wpf.ViewModels"
+        xmlns:converters="clr-namespace:TradingConsole.Wpf.Converters"
+        mc:Ignorable="d"
+        Title="{Binding WindowTitle}"
+        Width="400"
+        WindowStartupLocation="CenterOwner"
+        SizeToContent="Height"
+        d:DataContext="{d:DesignInstance viewModels:OrderEntryViewModel}">
+    <Window.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <converters:ValueToBrushConverter x:Key="ValueToBrushConverter"/>
+    </Window.Resources>
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <!-- Live Price -->
+            <RowDefinition Height="Auto"/>
+            <!-- Instrument -->
+            <RowDefinition Height="Auto"/>
+            <!-- Transaction -->
+            <RowDefinition Height="Auto"/>
+            <!-- Product Type -->
+            <RowDefinition Height="Auto"/>
+            <!-- Order Type -->
+            <RowDefinition Height="Auto"/>
+            <!-- Lots -->
+            <RowDefinition Height="Auto"/>
+            <!-- Total Quantity -->
+            <RowDefinition Height="Auto"/>
+            <!-- Price -->
+            <RowDefinition Height="Auto"/>
+            <!-- Trigger Price -->
+            <RowDefinition Height="Auto"/>
+            <!-- Bracket Order -->
+            <RowDefinition Height="Auto"/>
+            <!-- Trailing SL -->
+            <RowDefinition Height="Auto"/>
+            <!-- Slice Order -->
+            <RowDefinition Height="20"/>
+            <!-- Spacer -->
+            <RowDefinition Height="Auto"/>
+            <!-- Action Button -->
+            <RowDefinition Height="Auto"/>
+            <!-- Status Message -->
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Live Price Display -->
+        <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,5,10">
+            <TextBlock Text="Live LTP: " FontWeight="SemiBold"/>
+            <TextBlock Text="{Binding LiveLtp, StringFormat=C}" FontWeight="SemiBold"/>
+            <TextBlock Text="{Binding LiveLtpChange, StringFormat=( {0:C} )}" Foreground="{Binding LiveLtpChange, Converter={StaticResource ValueToBrushConverter}}"/>
+            <TextBlock Text="{Binding LiveLtpChangePercent, StringFormat=( {0:P2} )}" Foreground="{Binding LiveLtpChange, Converter={StaticResource ValueToBrushConverter}}"/>
+        </StackPanel>
+
+        <!-- Instrument Details -->
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Instrument:" VerticalAlignment="Center" Margin="5"/>
+        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding InstrumentName}" FontWeight="Bold" VerticalAlignment="Center" Margin="5" TextWrapping="Wrap"/>
+
+        <!-- Transaction Type -->
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Transaction:" VerticalAlignment="Center" Margin="5"/>
+        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding TransactionType}" FontWeight="Bold" VerticalAlignment="Center" Margin="5"/>
+
+        <!-- Product Type -->
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Product Type:" VerticalAlignment="Center" Margin="5"/>
+        <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding ProductTypes}" SelectedItem="{Binding SelectedProductType}" Margin="5"
+                  IsEnabled="{Binding IsProductTypeSelectionEnabled}"/>
+
+        <!-- Order Type -->
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Order Type:" VerticalAlignment="Center" Margin="5"/>
+        <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding OrderTypes}" SelectedItem="{Binding SelectedOrderType}" Margin="5"/>
+
+        <!-- Quantity -->
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="Lots:" VerticalAlignment="Center" Margin="5"/>
+        <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="Total Quantity:" VerticalAlignment="Center" Margin="5"/>
+        <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding TotalQuantity}" IsEnabled="False" FontWeight="SemiBold" VerticalAlignment="Center" Margin="5"/>
+
+        <!-- Price Fields -->
+        <TextBlock Grid.Row="7" Grid.Column="0" Text="Price:" VerticalAlignment="Center" Margin="5"
+                   Visibility="{Binding IsLimitPriceVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+        <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding Price}" Margin="5"
+                 Visibility="{Binding IsLimitPriceVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
+        <TextBlock Grid.Row="8" Grid.Column="0" Text="Trigger Price:" VerticalAlignment="Center" Margin="5"
+                   Visibility="{Binding IsTriggerPriceVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+        <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding TriggerPrice}" Margin="5"
+                 Visibility="{Binding IsTriggerPriceVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+
+        <!-- Bracket Order Fields -->
+        <StackPanel Grid.Row="9" Grid.ColumnSpan="2" Visibility="{Binding IsBracketOrderVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Target Offset:" VerticalAlignment="Center" Margin="5"/>
+                <TextBox Grid.Column="1" Text="{Binding TargetPrice}" Margin="5"/>
+            </Grid>
+        </StackPanel>
+
+        <StackPanel Grid.Row="10" Grid.ColumnSpan="2" Visibility="{Binding IsBracketOrderVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Stop-Loss Offset:" VerticalAlignment="Center" Margin="5"/>
+                <TextBox Grid.Column="1" Text="{Binding StopLossPrice}" Margin="5"/>
+            </Grid>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0" Content="Enable Trailing SL" VerticalAlignment="Center" Margin="5" IsChecked="{Binding IsTrailingStopLossEnabled}"/>
+                <TextBox Grid.Column="1" Text="{Binding TrailingStopLossValue}" Margin="5" Visibility="{Binding IsTrailingStopLossEnabled, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+            </Grid>
+        </StackPanel>
+
+        <!-- MODIFIED: This is the new Slice Order section -->
+        <StackPanel Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="2">
+            <CheckBox Content="Slice this order?" 
+                      IsChecked="{Binding IsSliceOrderEnabled, Mode=TwoWay}"
+                      IsEnabled="{Binding CanEnableSlicing}"
+                      Margin="5"/>
+            <StackPanel Margin="20,0,0,0" Visibility="{Binding IsSliceOrderVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Quantity per Slice (Lots):" VerticalAlignment="Center" Margin="5"/>
+                    <TextBox Grid.Column="1" Text="{Binding SliceQuantity, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
+                </Grid>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Interval (seconds):" VerticalAlignment="Center" Margin="5"/>
+                    <TextBox Grid.Column="1" Text="{Binding Interval, UpdateSourceTrigger=PropertyChanged}" Margin="5"/>
+                </Grid>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Action Button -->
+        <Button Grid.Row="13" Grid.Column="0" Grid.ColumnSpan="2" Content="{Binding WindowTitle}" Command="{Binding PlaceOrderCommand}" HorizontalAlignment="Center" Padding="20,5"/>
+
+        <!-- Status Message -->
+        <TextBlock Grid.Row="14" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding StatusMessage}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="5,10,5,5" Foreground="DarkBlue"/>
+    </Grid>
+</Window>
