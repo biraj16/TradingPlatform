@@ -1,4 +1,5 @@
 ﻿// In TradingConsole.Wpf/ViewModels/SettingsViewModel.cs
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -47,7 +48,26 @@ namespace TradingConsole.Wpf.ViewModels
             set { _sensexFreezeQuantity = value; OnPropertyChanged(); }
         }
 
+        // NEW: Short EMA Length property
+        private int _shortEmaLength;
+        public int ShortEmaLength
+        {
+            get => _shortEmaLength;
+            set { if (_shortEmaLength != value) { _shortEmaLength = value; OnPropertyChanged(); } }
+        }
+
+        // NEW: Long EMA Length property
+        private int _longEmaLength;
+        public int LongEmaLength
+        {
+            get => _longEmaLength;
+            set { if (_longEmaLength != value) { _longEmaLength = value; OnPropertyChanged(); } }
+        }
+
         public ICommand SaveSettingsCommand { get; }
+
+        // NEW: Event to notify subscribers when settings are saved
+        public event EventHandler? SettingsSaved;
 
         public SettingsViewModel(SettingsService settingsService)
         {
@@ -64,6 +84,10 @@ namespace TradingConsole.Wpf.ViewModels
             BankNiftyFreezeQuantity = _settings.FreezeQuantities.GetValueOrDefault("BANKNIFTY", 900);
             FinNiftyFreezeQuantity = _settings.FreezeQuantities.GetValueOrDefault("FINNIFTY", 1800);
             SensexFreezeQuantity = _settings.FreezeQuantities.GetValueOrDefault("SENSEX", 1000);
+
+            // NEW: Load EMA lengths
+            ShortEmaLength = _settings.ShortEmaLength;
+            LongEmaLength = _settings.LongEmaLength;
         }
 
         private void ExecuteSaveSettings(object? parameter)
@@ -74,10 +98,17 @@ namespace TradingConsole.Wpf.ViewModels
             _settings.FreezeQuantities["FINNIFTY"] = FinNiftyFreezeQuantity;
             _settings.FreezeQuantities["SENSEX"] = SensexFreezeQuantity;
 
+            // NEW: Save EMA lengths
+            _settings.ShortEmaLength = ShortEmaLength;
+            _settings.LongEmaLength = LongEmaLength;
+
             // Save the updated settings to the file
             _settingsService.SaveSettings(_settings);
 
             MessageBox.Show("Settings saved successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+
+            // NEW: Raise the SettingsSaved event
+            SettingsSaved?.Invoke(this, EventArgs.Empty);
         }
 
         /// <summary>
@@ -90,6 +121,7 @@ namespace TradingConsole.Wpf.ViewModels
                 _settings.MonitoredSymbols.Add(symbol);
                 _settingsService.SaveSettings(_settings);
                 OnPropertyChanged(nameof(MonitoredSymbols));
+                SettingsSaved?.Invoke(this, EventArgs.Empty); // Also notify on symbol change
             }
         }
 
@@ -104,19 +136,22 @@ namespace TradingConsole.Wpf.ViewModels
                 _settings.MonitoredSymbols.Remove(symbolToRemove);
                 _settingsService.SaveSettings(_settings);
                 OnPropertyChanged(nameof(MonitoredSymbols));
+                SettingsSaved?.Invoke(this, EventArgs.Empty); // Also notify on symbol change
             }
+        }
+
+        public void ReplaceMonitoredSymbols(List<string> newSymbols)
+        {
+            _settings.MonitoredSymbols = newSymbols;
+            _settingsService.SaveSettings(_settings);
+            OnPropertyChanged(nameof(MonitoredSymbols));
+            SettingsSaved?.Invoke(this, EventArgs.Empty); // Also notify on symbol change
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-        }
-        public void ReplaceMonitoredSymbols(List<string> newSymbols)
-        {
-            _settings.MonitoredSymbols = newSymbols;
-            _settingsService.SaveSettings(_settings);
-            OnPropertyChanged(nameof(MonitoredSymbols));
         }
     }
 }

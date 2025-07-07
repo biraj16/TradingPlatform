@@ -56,7 +56,7 @@ namespace TradingConsole.Wpf.ViewModels
         public DashboardViewModel Dashboard { get; }
         public AnalysisService AnalysisService => _analysisService;
         public SettingsViewModel Settings { get; }
-        public AnalysisTabViewModel AnalysisTab { get; } // NEW: AnalysisTabViewModel property
+        public AnalysisTabViewModel AnalysisTab { get; }
 
         public decimal OpenPnl => OpenPositions.Sum(p => p.UnrealizedPnl);
         public decimal BookedPnl => ClosedPositions.Sum(p => p.RealizedPnl);
@@ -176,12 +176,18 @@ namespace TradingConsole.Wpf.ViewModels
 
             var settingsService = new SettingsService();
             Settings = new SettingsViewModel(settingsService);
+            // NEW: Subscribe to SettingsSaved event to update AnalysisService parameters
+            Settings.SettingsSaved += Settings_SettingsSaved;
 
             _analysisService = new AnalysisService();
+            // NEW: Initialize AnalysisService EMA lengths from settings
+            _analysisService.ShortEmaLength = Settings.ShortEmaLength;
+            _analysisService.LongEmaLength = Settings.LongEmaLength;
+
             _analysisService.OnAnalysisUpdated += OnAnalysisResultUpdated;
 
             Dashboard = new DashboardViewModel();
-            AnalysisTab = new AnalysisTabViewModel(); // NEW: Instantiate the new AnalysisTabViewModel
+            AnalysisTab = new AnalysisTabViewModel();
 
             _webSocketClient.OnConnected += OnWebSocketConnected;
             _webSocketClient.OnLtpUpdate += OnLtpUpdateReceived;
@@ -218,6 +224,17 @@ namespace TradingConsole.Wpf.ViewModels
             RemoveInstrumentCommand = new RelayCommand(async p => await ExecuteRemoveInstrumentAsync(p));
 
             Task.Run(() => LoadDataOnStartupAsync());
+        }
+
+        // NEW: Event handler for SettingsSaved
+        private void Settings_SettingsSaved(object? sender, EventArgs e)
+        {
+            // Update AnalysisService EMA lengths when settings are saved
+            _analysisService.ShortEmaLength = Settings.ShortEmaLength;
+            _analysisService.LongEmaLength = Settings.LongEmaLength;
+            // You might want to re-run analysis for existing instruments here
+            // or trigger a refresh of the analysis tab if needed.
+            // For simplicity, we'll rely on new data updates to trigger re-analysis.
         }
 
         private void OnAnalysisResultUpdated(AnalysisResult result)
@@ -691,8 +708,8 @@ namespace TradingConsole.Wpf.ViewModels
                 "FUTIDX" => "FUT",
                 "FUTSTK" => "FUT",
                 "INDEX" => "IDX",
-                "OPTIDX" => "OPT", // ADDED: Option index type
-                "OPTSTK" => "OPT", // ADDED: Option stock type
+                "OPTIDX" => "OPT",
+                "OPTSTK" => "OPT",
                 _ => "UNKNOWN"
             };
         }
@@ -708,8 +725,6 @@ namespace TradingConsole.Wpf.ViewModels
                 .Where(i => i.FeedType == FeedTypeQuote)
                 .ToDictionary(i => i.SecurityId, i => i.SegmentId);
 
-            // NEW: Subscribe to Ticker feed for indices explicitly if not already covered by Quote
-            // This ensures indices get LTP updates even if not subscribed for full quotes.
             var tickerInstruments = allInstruments
                 .Where(i => i.FeedType == FeedTypeTicker && !quoteInstruments.ContainsKey(i.SecurityId))
                 .ToDictionary(i => i.SecurityId, i => i.SegmentId);
@@ -1486,6 +1501,8 @@ namespace TradingConsole.Wpf.ViewModels
             _ivRefreshTimer?.Dispose();
             _optionChainLoadSemaphore?.Dispose();
             _ivCacheSemaphore?.Dispose();
+            // NEW: Unsubscribe from SettingsSaved event to prevent memory leaks
+            Settings.SettingsSaved -= Settings_SettingsSaved;
         }
         #endregion
     }

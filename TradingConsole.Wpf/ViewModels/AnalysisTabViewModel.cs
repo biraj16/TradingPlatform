@@ -32,7 +32,8 @@ namespace TradingConsole.Wpf.ViewModels
                 // Because AnalysisResult now inherits ObservableModel, property changes
                 // within 'existingResult' will automatically notify the UI.
                 existingResult.Vwap = newResult.Vwap;
-                existingResult.Ema = newResult.Ema;
+                existingResult.ShortEma = newResult.ShortEma; // Update Short EMA
+                existingResult.LongEma = newResult.LongEma;   // Update Long EMA
                 existingResult.TradingSignal = newResult.TradingSignal;
                 existingResult.CurrentIv = newResult.CurrentIv;
                 existingResult.AvgIv = newResult.AvgIv;
@@ -41,6 +42,8 @@ namespace TradingConsole.Wpf.ViewModels
                 existingResult.AvgVolume = newResult.AvgVolume;
                 existingResult.VolumeSignal = newResult.VolumeSignal;
                 existingResult.Symbol = newResult.Symbol; // Ensure symbol is also updated
+                existingResult.InstrumentGroup = newResult.InstrumentGroup; // Update grouping properties
+                existingResult.UnderlyingGroup = newResult.UnderlyingGroup;
             }
             else
             {

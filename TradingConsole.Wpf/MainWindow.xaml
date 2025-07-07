@@ -227,6 +227,10 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <!-- NEW: Rows for EMA settings -->
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Nifty:" VerticalAlignment="Center" Margin="5"/>
@@ -241,7 +245,15 @@
                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Sensex:" VerticalAlignment="Center" Margin="5"/>
                                 <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SensexFreezeQuantity, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="5" Width="100" HorizontalAlignment="Left"/>
 
-                                <Button Grid.Row="4" Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save Settings" Margin="5,15,5,5" Width="100" HorizontalAlignment="Left" Padding="5"/>
+                                <!-- NEW: EMA Lengths -->
+                                <TextBlock Grid.Row="4" Grid.ColumnSpan="2" Text="EMA Lengths" FontWeight="Bold" FontSize="14" Margin="5,15,5,5"/>
+                                <TextBlock Grid.Row="5" Grid.Column="0" Text="Short EMA:" VerticalAlignment="Center" Margin="5"/>
+                                <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding ShortEmaLength, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="5" Width="100" HorizontalAlignment="Left"/>
+
+                                <TextBlock Grid.Row="6" Grid.Column="0" Text="Long EMA:" VerticalAlignment="Center" Margin="5"/>
+                                <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding LongEmaLength, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="5" Width="100" HorizontalAlignment="Left"/>
+
+                                <Button Grid.Row="7" Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save Settings" Margin="5,15,5,5" Width="100" HorizontalAlignment="Left" Padding="5"/>
                             </Grid>
                         </StackPanel>
                     </GroupBox>
@@ -564,7 +576,7 @@
             </TabItem>
             <TabItem Header="Analysis">
                 <views:AnalysisTabView DataContext="{Binding AnalysisTab}"/>
-            </TabItem>            
+            </TabItem>
         </TabControl>
 
         <StatusBar Grid.Row="1" VerticalAlignment="Bottom">

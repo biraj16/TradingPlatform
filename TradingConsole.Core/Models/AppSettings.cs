@@ -20,6 +20,10 @@ namespace TradingConsole.Core.Models
         /// </summary>
         public List<string> MonitoredSymbols { get; set; }
 
+        // NEW: EMA Lengths for Analysis Service
+        public int ShortEmaLength { get; set; }
+        public int LongEmaLength { get; set; }
+
         public AppSettings()
         {
             // Initialize with default values.
@@ -50,9 +54,12 @@ namespace TradingConsole.Core.Models
                 "FUT:ICICIBANK",
                 "FUT:RELIANCE",
                 "FUT:INFY",
-                "FUT:ITC",
                 "FUT:TCS"
             };
+
+            // NEW: Default EMA lengths
+            ShortEmaLength = 9;  // Default for short EMA
+            LongEmaLength = 21;  // Default for long EMA
         }
     }
 }

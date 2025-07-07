@@ -1,7 +1,8 @@
 ﻿// In TradingConsole.Wpf/Services/SettingsService.cs
-using System;
-using System.IO;
 using Newtonsoft.Json;
+using System;
+using System.Diagnostics;
+using System.IO;
 using TradingConsole.Core.Models;
 
 namespace TradingConsole.Wpf.Services
@@ -40,11 +41,13 @@ namespace TradingConsole.Wpf.Services
             try
             {
                 string json = File.ReadAllText(_settingsFilePath);
+                // Use ?? new AppSettings() to ensure a default object is returned even if deserialization yields null
                 return JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // If the file is corrupt or invalid, return default settings.
+                // If the file is corrupt or invalid, log the error and return default settings.
+                Debug.WriteLine($"Error loading settings from {_settingsFilePath}: {ex.Message}");
                 return new AppSettings();
             }
         }

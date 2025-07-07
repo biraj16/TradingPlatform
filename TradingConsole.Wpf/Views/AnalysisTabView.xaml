@@ -12,6 +12,15 @@
         <!-- Converters for coloring values based on sign -->
         <converters:ValueToBrushConverter x:Key="ValueToBrushConverter"/>
         <converters:ValueToSignConverter x:Key="ValueToSignConverter"/>
+
+        <!-- CollectionViewSource for Grouping -->
+        <CollectionViewSource x:Key="AnalysisResultsGrouped"
+                              Source="{Binding AnalysisResults}">
+            <CollectionViewSource.GroupDescriptions>
+                <!-- Group by the new FullGroupIdentifier property -->
+                <PropertyGroupDescription PropertyName="FullGroupIdentifier"/>
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
     </UserControl.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -22,19 +31,57 @@
         <TextBlock Grid.Row="0" Text="Real-time Analysis Results" Margin="10" FontSize="18" FontWeight="Bold"/>
 
         <DataGrid Grid.Row="1"
-                  ItemsSource="{Binding AnalysisResults}"
+                  ItemsSource="{Binding Source={StaticResource AnalysisResultsGrouped}}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   HeadersVisibility="Column"
                   GridLinesVisibility="Horizontal"
                   BorderThickness="1"
                   BorderBrush="LightGray"
-                  Margin="10">
+                  Margin="10"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="False"
+                  CanUserResizeColumns="True"
+                  CanUserResizeRows="False"
+                  CanUserSortColumns="True"
+                  RowDetailsVisibilityMode="Collapsed">
+            <DataGrid.GroupStyle>
+                <!-- Style for the group headers -->
+                <GroupStyle>
+                    <GroupStyle.ContainerStyle>
+                        <Style TargetType="{x:Type GroupItem}">
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="{x:Type GroupItem}">
+                                        <Expander IsExpanded="True"
+                                                  Background="#F0F0F0"
+                                                  BorderBrush="LightGray"
+                                                  BorderThickness="0,0,0,1"
+                                                  Margin="0,5,0,0">
+                                            <Expander.Header>
+                                                <StackPanel Orientation="Horizontal" Margin="5,0">
+                                                    <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="{Binding ItemCount, StringFormat= ({0})}" Margin="5,0,0,0" FontStyle="Italic" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Expander.Header>
+                                            <ItemsPresenter/>
+                                        </Expander>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </GroupStyle.ContainerStyle>
+                </GroupStyle>
+            </DataGrid.GroupStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="1.5*"/>
                 <DataGridTextColumn Header="Security ID" Binding="{Binding SecurityId}" Width="*"/>
                 <DataGridTextColumn Header="VWAP" Binding="{Binding Vwap, StringFormat=N2}" Width="*"/>
-                <DataGridTextColumn Header="EMA" Binding="{Binding Ema, StringFormat=N2}" Width="*"/>
+                <DataGridTextColumn Header="Short EMA" Binding="{Binding ShortEma, StringFormat=N2}" Width="*"/>
+                <!-- Renamed Header -->
+                <DataGridTextColumn Header="Long EMA" Binding="{Binding LongEma, StringFormat=N2}" Width="*"/>
+                <!-- NEW Column -->
                 <DataGridTextColumn Header="LTP Signal" Binding="{Binding TradingSignal}" Width="2*"/>
 
                 <!-- NEW COLUMNS FOR OPTION-SPECIFIC ANALYSIS -->
