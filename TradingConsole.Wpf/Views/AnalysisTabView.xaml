@@ -38,8 +38,8 @@
                 <DataGridTextColumn Header="LTP Signal" Binding="{Binding TradingSignal}" Width="2*"/>
 
                 <!-- NEW COLUMNS FOR OPTION-SPECIFIC ANALYSIS -->
-                <DataGridTextColumn Header="Current IV" Binding="{Binding CurrentIv, StringFormat=P2}" Width="*"/>
-                <DataGridTextColumn Header="Avg IV" Binding="{Binding AvgIv, StringFormat=P2}" Width="*"/>
+                <DataGridTextColumn Header="Current IV" Binding="{Binding CurrentIv, StringFormat={}{0:F2}%}" Width="*"/>
+                <DataGridTextColumn Header="Avg IV" Binding="{Binding AvgIv, StringFormat={}{0:F2}%}" Width="*"/>
                 <DataGridTextColumn Header="IV Signal" Binding="{Binding IvSignal}" Width="1.5*"/>
                 <DataGridTextColumn Header="Current Vol" Binding="{Binding CurrentVolume}" Width="*"/>
                 <DataGridTextColumn Header="Avg Vol" Binding="{Binding AvgVolume}" Width="*"/>

@@ -66,14 +66,14 @@ namespace TradingConsole.Wpf.Services
         }
 
         // NEW: Parameters for IV and Volume analysis thresholds
-        private int _ivHistoryLength = 10; // Number of IV data points to consider for average (e.g., last 10 updates)
-        private decimal _ivSpikeThreshold = 0.005m; // E.g., 0.5% absolute increase from average for a "spike" (0.005 means 0.5%)
-        private int _volumeHistoryLength = 10; // Number of volume data points to consider for average
+        private int _ivHistoryLength = 15; // Number of IV data points to consider for average (e.g., last 10 updates)
+        private decimal _ivSpikeThreshold = 0.01m; // E.g., 0.5% absolute increase from average for a "spike" (0.005 means 0.5%)
+        private int _volumeHistoryLength = 12; // Number of volume data points to consider for average
         private double _volumeBurstMultiplier = 2.0; // E.g., current volume is 2x average volume for a "burst"
 
         // Minimum number of valid IV history points required to calculate an IV signal.
         // This prevents false positives when history is still building or only contains zeros.
-        private const int MinIvHistoryForSignal = 5;
+        private const int MinIvHistoryForSignal = 2;
 
         // Stores a limited history of DashboardInstrument objects for each instrument.
         private readonly Dictionary<string, List<DashboardInstrument>> _instrumentHistory = new();
